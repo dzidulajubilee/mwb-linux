@@ -35,6 +35,7 @@ type edgeStrip struct {
 	conn *xgb.Conn
 	win  xproto.Window
 	hits chan int32
+	done chan struct{} // closed when readEvents returns
 }
 
 func newEdgeStrip(display, side string) (*edgeStrip, error) {
@@ -94,13 +95,14 @@ func newEdgeStrip(display, side string) (*edgeStrip, error) {
 		return nil, fmt.Errorf("map edge window: %w", err)
 	}
 
-	s := &edgeStrip{conn: conn, win: win, hits: make(chan int32, 1)}
+	s := &edgeStrip{conn: conn, win: win, hits: make(chan int32, 1), done: make(chan struct{})}
 	go s.readEvents()
 	ok = true
 	return s, nil
 }
 
 func (s *edgeStrip) readEvents() {
+	defer close(s.done)
 	defer close(s.hits)
 	for {
 		ev, xerr := s.conn.WaitForEvent()
@@ -132,4 +134,8 @@ func (s *edgeStrip) Raise() {
 	xproto.ConfigureWindow(s.conn, s.win, xproto.ConfigWindowStackMode, []uint32{xproto.StackModeAbove})
 }
 
-func (s *edgeStrip) Close() { s.conn.Close() }
+// Close closes the X connection, which ends readEvents, and waits for it.
+func (s *edgeStrip) Close() {
+	s.conn.Close()
+	<-s.done
+}

@@ -53,7 +53,7 @@ func TestSetEdgeLines(t *testing.T) {
 func TestSaveEdgeKeepsFileUsable(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
-	orig := "# settings\nhost = \"10.249.1.209\"\nkey = \"abcdefghijklmnop\"\npeer = \"linux\"\nedge = \"right\"\n"
+	orig := "# settings\nhost = \"10.0.0.5\"\nkey = \"abcdefghijklmnop\"\npeer = \"linux\"\nedge = \"right\"\n"
 	if err := os.WriteFile(path, []byte(orig), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestSaveEdgeKeepsFileUsable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Edge != "left" || cfg.EdgeChanged != 1700000000 || cfg.Host != "10.249.1.209" {
+	if cfg.Edge != "left" || cfg.EdgeChanged != 1700000000 || cfg.Host != "10.0.0.5" {
 		t.Fatalf("after SaveEdge: %+v", cfg)
 	}
 	info, err := os.Stat(path)

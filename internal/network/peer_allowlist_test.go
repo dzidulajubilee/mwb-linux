@@ -136,7 +136,7 @@ func TestPeerFilterAcceptLocalNetwork(t *testing.T) {
 	}
 	for remote, want := range map[string]bool{
 		"192.168.1.99:41000":              true,
-		"10.249.1.209:41000":              true,
+		"10.0.0.5:41000":              true,
 		"172.16.4.2:41000":                true,
 		"[fe80::5054:ff:fe12:3456]:41000": true,
 		"[fd00::1]:41000":                 true,

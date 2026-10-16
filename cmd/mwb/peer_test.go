@@ -19,10 +19,10 @@ func TestLocalAddressStrings(t *testing.T) {
 		return n
 	}
 	got := localAddressStrings([]net.Addr{
-		cidr("127.0.0.1/8"), cidr("10.249.1.20/24"), cidr("192.0.2.2/24"),
+		cidr("127.0.0.1/8"), cidr("10.0.0.20/24"), cidr("192.0.2.2/24"),
 		cidr("fe80::1/64"), cidr("fd00::5/64"), cidr("8.8.8.8/32"),
 	})
-	want := []string{"10.249.1.20", "fd00::5"}
+	want := []string{"10.0.0.20", "fd00::5"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("localAddressStrings = %v, want %v", got, want)
 	}
@@ -74,11 +74,11 @@ func TestMirrorPeerSide(t *testing.T) {
 		adopt              bool
 		want               string
 	}{
-		{"no clash", "left", 5, 1, "AA-000-526", "mystogan", "right", false, "left"},
-		{"peer chose more recently", "right", 30, 2, "AA-000-526", "mystogan", "right", true, "left"},
-		{"this machine chose more recently", "right", 2, 30, "AA-000-526", "mystogan", "right", false, "right"},
-		{"never chosen anywhere: name sorting last adopts", "left", unknown, unknown, "mystogan", "AA-000-526", "left", true, "right"},
-		{"never chosen anywhere: name sorting first keeps", "left", unknown, unknown, "AA-000-526", "mystogan", "left", false, "left"},
+		{"no clash", "left", 5, 1, "alpha-pc", "beta-pc", "right", false, "left"},
+		{"peer chose more recently", "right", 30, 2, "alpha-pc", "beta-pc", "right", true, "left"},
+		{"this machine chose more recently", "right", 2, 30, "alpha-pc", "beta-pc", "right", false, "right"},
+		{"never chosen anywhere: name sorting last adopts", "left", unknown, unknown, "beta-pc", "alpha-pc", "left", true, "right"},
+		{"never chosen anywhere: name sorting first keeps", "left", unknown, unknown, "alpha-pc", "beta-pc", "left", false, "left"},
 		{"older peer build has no age: a recorded choice wins", "right", 10, unknown, "zz", "aa", "right", false, "right"},
 		{"same name never adopts", "left", 3, 3, "box", "box", "left", false, "left"},
 	} {

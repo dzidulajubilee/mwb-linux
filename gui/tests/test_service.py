@@ -106,7 +106,7 @@ class CrashLoopTests(unittest.TestCase):
 
 class LanAddressTests(unittest.TestCase):
     def test_matches_go_is_private(self):
-        for ip, want in {"10.249.1.209": True, "172.16.4.2": True, "172.31.255.1": True,
+        for ip, want in {"10.0.0.5": True, "172.16.4.2": True, "172.31.255.1": True,
                          "192.168.1.5": True, "172.32.0.1": False, "192.0.2.2": False,
                          "127.0.0.1": False, "8.8.8.8": False, "nonsense": False}.items():
             self.assertIs(service.is_lan_address(ip), want, ip)
@@ -117,7 +117,7 @@ class LanAddressTests(unittest.TestCase):
 
 
 class DescribeConnectionTests(unittest.TestCase):
-    base = {"state": "connected", "remote": "mystogan", "edge": "left"}
+    base = {"state": "connected", "remote": "beta-pc", "edge": "left"}
 
     def d(self, **kw):
         return service.describe_connection(dict(self.base, **kw))
@@ -141,11 +141,11 @@ class DescribeConnectionTests(unittest.TestCase):
     def test_only_peer_shares(self):
         kind, _, detail = self.d(bidirectional=False, sharing=False, peer_sharing=True, peer_edge="right")
         self.assertEqual(kind, "ok")
-        self.assertIn("mystogan can control this computer", detail)
+        self.assertIn("beta-pc can control this computer", detail)
 
     def test_only_here_shares(self):
         _, _, detail = self.d(bidirectional=True, sharing=True, peer_sharing=False, peer_edge="right")
-        self.assertIn("This computer controls mystogan", detail)
+        self.assertIn("This computer controls beta-pc", detail)
 
     def test_capture_failed(self):
         _, _, detail = self.d(bidirectional=True, sharing=False, peer_sharing=True, peer_edge="right")
@@ -158,9 +158,9 @@ class DescribeConnectionTests(unittest.TestCase):
 
     def test_side_clash_says_which_way_to_fix(self):
         _, _, detail = self.d(bidirectional=True, sharing=True, peer_sharing=True,
-                              edge="left", peer_edge="left", remote="mystogan")
+                              edge="left", peer_edge="left", remote="beta-pc")
         self.assertIn("sits to the right of this computer", detail)
-        self.assertIn("swap them on mystogan", detail)
+        self.assertIn("swap them on beta-pc", detail)
 
 
 if __name__ == "__main__":

@@ -169,9 +169,10 @@ func (t *touchpad) key(ev inputEvent, out touchpadOutput) {
 		}
 	case uint(input.BTN_RIGHT):
 		// Pads with separate physical buttons.
-		if ev.Value == 1 {
+		switch ev.Value {
+		case 1:
 			out.touchpadButton(protocol.WM_RBUTTONDOWN)
-		} else if ev.Value == 0 {
+		case 0:
 			out.touchpadButton(protocol.WM_RBUTTONUP)
 		}
 	}
