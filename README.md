@@ -411,7 +411,19 @@ control and logs a warning. Use a relative mouse for Linux-to-Windows control.
 
 ### "permission denied" on /dev/uinput
 
-Run the setup permissions commands above, then log out and back in.
+mwb prints which cause applies and its fix, and the settings window shows the
+same at the top. The usual one, right after installing:
+
+- **You were just added to the `input` group.** Group membership is fixed
+  when a session starts, so the running desktop, and the mwb service inside
+  it, don't have it yet. **Restart the computer.** Logging out is often not
+  enough, because your systemd user session can keep running. Check with
+  `id -nG`: the output should include `input`.
+- **Not in the group:** run `sudo usermod -aG input $USER`, then restart.
+- **`/dev/uinput` missing:** load the module with `sudo modprobe uinput`.
+- **In the group, still refused:** `ls -l /dev/uinput` should show
+  `crw-rw---- 1 root input`. If it doesn't, reinstall the package or apply
+  the udev rule from [From Binary](#from-binary).
 
 ### Clipboard not syncing
 

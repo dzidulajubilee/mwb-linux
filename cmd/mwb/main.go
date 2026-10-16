@@ -172,13 +172,7 @@ func main() {
 	mouse, err := input.CreateVirtualMouse("mwb-mouse")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error creating virtual mouse: %v\n", err)
-		fmt.Fprintln(os.Stderr, "Setup required:")
-		fmt.Fprintln(os.Stderr, "  1. sudo modprobe uinput")
-		fmt.Fprintln(os.Stderr, "  2. echo 'uinput' | sudo tee /etc/modules-load.d/uinput.conf")
-		fmt.Fprintln(os.Stderr, "  3. echo 'KERNEL==\"uinput\", GROUP=\"input\", MODE=\"0660\"' | sudo tee /etc/udev/rules.d/99-uinput.rules")
-		fmt.Fprintln(os.Stderr, "  4. sudo udevadm control --reload-rules && sudo udevadm trigger /dev/uinput")
-		fmt.Fprintln(os.Stderr, "  5. Ensure your user is in the 'input' group: sudo usermod -aG input $USER")
-		fmt.Fprintln(os.Stderr, "Ensure your user is in the 'input' group: sudo usermod -aG input $USER")
+		fmt.Fprintln(os.Stderr, uinputHelp(currentUinputState(err)))
 		os.Exit(1)
 	}
 	defer func() { _ = mouse.Close() }()
@@ -186,6 +180,7 @@ func main() {
 	keyboard, err := input.CreateVirtualKeyboard("mwb-keyboard")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error creating virtual keyboard: %v\n", err)
+		fmt.Fprintln(os.Stderr, uinputHelp(currentUinputState(err)))
 		os.Exit(1)
 	}
 	defer func() { _ = keyboard.Close() }()

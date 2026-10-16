@@ -694,12 +694,13 @@ class MainWindow(Gtk.ApplicationWindow):
         def work():
             unit = service.query()
             st = service.read_status()
-            GLib.idle_add(self._show_status, unit, st)
+            problem = service.uinput_problem()
+            GLib.idle_add(self._show_status, unit, st, problem)
 
         threading.Thread(target=work, daemon=True).start()
         return True
 
-    def _show_status(self, unit: service.UnitState, st: dict | None):
+    def _show_status(self, unit: service.UnitState, st: dict | None, problem=None):
         self._poll_busy = False
         self._unit = unit
         connected = False
@@ -711,8 +712,14 @@ class MainWindow(Gtk.ApplicationWindow):
         elif st and st.get("state") == "connecting":
             kind, title = "wait", f"Looking for {st.get('host')}…"
             detail = "Make sure the other computer is on and using the same security key."
+        elif problem and not unit.running:
+            # The exact cause and fix, ahead of the generic service states.
+            kind, (title, detail) = "error", problem
+        elif unit.crash_looping:
+            kind, title = "error", "Keeps stopping"
+            detail = "mwb exits with an error and systemd keeps restarting it. Open Recent log below to see why."
         elif unit.running:
-            kind, title, detail = "ok", "Running", "Connection details appear once mwb is updated to this version."
+            kind, title, detail = "ok", "Running", "Waiting for connection details from mwb."
         elif unit.error:
             kind, title = "off", "Can’t check the background service"
             detail = f"systemctl reported: {unit.error}"
@@ -734,9 +741,11 @@ class MainWindow(Gtk.ApplicationWindow):
             self.arrangement.remote_name = remote or self.host.get_text().strip()
             self.arrangement.refresh()
 
-        self.btn_start.set_visible(unit.installed and not unit.running)
-        self.btn_stop.set_visible(unit.installed and unit.running)
-        self.btn_restart.set_visible(unit.installed and unit.running)
+        # A crash loop is still a started unit: offer Stop to end it.
+        started = unit.running or unit.crash_looping
+        self.btn_start.set_visible(unit.installed and not started)
+        self.btn_stop.set_visible(unit.installed and started)
+        self.btn_restart.set_visible(unit.installed and started)
         self.autostart.set_sensitive(unit.installed)
         self._loading = True
         self.autostart.set_active(unit.enabled)
