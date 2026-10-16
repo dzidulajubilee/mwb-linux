@@ -34,6 +34,7 @@ MANAGED: dict[str, type] = {
     "name": str,
     "peer": str,
     "edge": str,
+    "edge_changed": int,  # when edge was chosen, Unix seconds; mwb keeps two peers' sides mirrored
     "bidirectional": bool,
     "clipboard": bool,
     "file_transfer": bool,
@@ -47,6 +48,7 @@ DEFAULTS: dict[str, object] = {
     "name": "",
     "peer": "windows",
     "edge": "left",
+    "edge_changed": 0,
     "bidirectional": False,
     "clipboard": True,
     "file_transfer": True,

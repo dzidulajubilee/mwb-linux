@@ -273,9 +273,17 @@ Without further setup:
 - **Screen sizes are exchanged.** Right after connecting, each machine tells
   the other its screen size, so `remote_width` and `remote_height` are only a
   fallback.
-- **Mistakes are reported.** Each machine also says which side the other is
-  on and whether it actually shares. If both put the other on the same side,
-  or neither shares, the settings window and the log say so and what to change.
+- **Sides stay mirrored.** "The other computer is on my left" and "I am on
+  its right" are one fact, so you only need to set it on one machine. Saving
+  the side in the settings window records when it was chosen
+  (`edge_changed`). If the two machines disagree when they connect, the more
+  recent choice wins: the other machine saves the mirror of it to its own
+  `config.toml` and reconnects, and its settings window says so. A side
+  forced with `-edge` on the command line is never changed.
+- **Mistakes are reported.** Each machine also says whether it actually
+  shares. If neither shares, or the sides cannot be mirrored (for example the
+  other machine runs an older version), the settings window and the log say
+  so and what to change.
 
 Clipboard and file copy work in both directions. Sending input needs X11 or
 XWayland on that machine; see [Known Limitations](#known-limitations).

@@ -5,9 +5,9 @@ import "testing"
 
 func TestPeerInfoRoundTripOverTheWire(t *testing.T) {
 	for _, in := range []PeerInfo{
-		{ScreenWidth: 1920, ScreenHeight: 1080, Edge: "right", Sharing: true},
-		{ScreenWidth: 2560, ScreenHeight: 1440, Edge: "left", Sharing: false},
-		{Edge: "left"}, // screen size unknown
+		{ScreenWidth: 1920, ScreenHeight: 1080, Edge: "right", Sharing: true, EdgeAge: 3},
+		{ScreenWidth: 2560, ScreenHeight: 1440, Edge: "left", Sharing: false, EdgeAge: EdgeAgeUnknown},
+		{Edge: "left"}, // screen size unknown, side just chosen
 	} {
 		buf := NewPeerInfoPacket(7, 9, in).Marshal()
 		if len(buf) != PacketSize {
@@ -32,6 +32,20 @@ func TestPeerInfoRejectsOtherPacketsAndVersions(t *testing.T) {
 	p.Mouse.DwFlags = 99
 	if _, ok := p.PeerInfo(); ok {
 		t.Fatal("an unknown format version was accepted")
+	}
+}
+
+func TestPeerInfoEdgeAge(t *testing.T) {
+	// Larger ages are capped rather than wrapping into the version byte.
+	p := NewPeerInfoPacket(1, 2, PeerInfo{Edge: "right", EdgeAge: 1 << 30})
+	if info, ok := p.PeerInfo(); !ok || info.EdgeAge != EdgeAgeUnknown {
+		t.Fatalf("oversized age: got %+v ok=%v, want EdgeAgeUnknown", info, ok)
+	}
+	// A version 1 sender (older build) has no age: treat it as never chosen,
+	// so a side chosen on this build wins.
+	p.Mouse.DwFlags = 1
+	if info, ok := p.PeerInfo(); !ok || info.EdgeAge != EdgeAgeUnknown || info.Edge != "right" {
+		t.Fatalf("version 1: got %+v ok=%v", info, ok)
 	}
 }
 

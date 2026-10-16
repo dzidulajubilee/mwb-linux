@@ -103,6 +103,13 @@ class RenderTests(unittest.TestCase):
             'host = "a"\nkey = "0123456789abcdef"\npeer = "linux"\nbidirectional = true\n\n[future]\nx = 1\n',
         )
 
+    def test_edge_changed_is_managed_next_to_edge(self):
+        doc = cf.parse('host = "a"\nedge = "left"\n')
+        self.assertEqual(doc.values()["edge_changed"], 0)
+        out = cf.render(doc, {"edge": "right", "edge_changed": 1700000000})
+        self.assertEqual(out, 'host = "a"\nedge = "right"\nedge_changed = 1700000000\n')
+        self.assertEqual(cf.parse(out).values()["edge_changed"], 1700000000)
+
     def test_appends_to_file_without_trailing_newline(self):
         out = cf.render(cf.parse('host = "a"'), {"edge": "right"})
         self.assertEqual(out, 'host = "a"\nedge = "right"\n')
