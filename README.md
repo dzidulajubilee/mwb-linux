@@ -230,50 +230,68 @@ In PowerToys MWB, enter the security key and device name to connect.
 ## Linux to Linux
 
 Two Linux machines can share one keyboard and mouse with no Windows PC
-involved. Run mwb-linux on both and set `peer = "linux"` on both.
+involved. Pairing works like PowerToys: one computer waits, and the other
+connects to it.
 
-1. Make a key on either machine with `mwb genkey`, and use that same key on
-   both machines.
-2. Configure each machine to point at the other one. Give the two machines
-   different names. Put `edge` on the side where the other machine sits.
+**In the settings window** (`mwb-gui`), on both computers:
 
-   ```toml
-   # On "desk" (the laptop is to its right)
-   host = "192.168.1.21"     # the laptop
-   key = "PASTE-THE-SAME-KEY-ON-BOTH"
-   name = "desk"
-   peer = "linux"
-   edge = "right"
-   bidirectional = true
-   remote_width = 1920       # the laptop's screen
-   remote_height = 1200
-   ```
+1. Set **Other computer** to *Linux with mwb-linux*.
+2. **Security key:** click Generate on one computer, then Copy it and use
+   the same key on the other.
+3. **Address:** leave it empty on one computer, so that it waits. The window
+   shows that computer's address. On the other computer, enter that address.
+4. In the screen arrangement, click the side the other computer is on. This
+   must be opposite on the two machines.
+5. Click **Save**, then **Start**.
 
-   ```toml
-   # On "laptop" (the desk is to its left)
-   host = "192.168.1.20"     # the desk
-   key = "PASTE-THE-SAME-KEY-ON-BOTH"
-   name = "laptop"
-   peer = "linux"
-   edge = "left"
-   bidirectional = true
-   remote_width = 2560       # the desk's screen
-   remote_height = 1440
-   ```
+**In config files**, the same setup looks like this:
 
-3. Start mwb on both. With `bidirectional = true` the user service can run
-   it: `systemctl --user enable --now mwb`.
+```toml
+# On "desk", which waits (the laptop is to its right)
+key = "PASTE-THE-SAME-KEY-ON-BOTH"
+name = "desk"
+peer = "linux"
+edge = "right"
+```
 
-Either machine's keyboard and mouse can then drive the shared cursor. Clipboard
-and file copy work in both directions. Both machines need X11 or XWayland to
-send input; see [Known Limitations](#known-limitations).
+```toml
+# On "laptop", which connects (the desk is to its left)
+host = "192.168.1.20"     # the desk's address
+key = "PASTE-THE-SAME-KEY-ON-BOTH"
+name = "laptop"
+peer = "linux"
+edge = "left"
+```
+
+Start mwb on both, for example with `systemctl --user enable --now mwb`.
+
+Without further setup:
+
+- **Both directions share.** Either computer's keyboard and mouse can cross
+  the shared edge, because `bidirectional` defaults to on for a Linux pair.
+  Set `bidirectional = false` on a machine that should only be controlled.
+- **Screen sizes are exchanged.** Right after connecting, each machine tells
+  the other its screen size, so `remote_width` and `remote_height` are only a
+  fallback.
+- **Mistakes are reported.** Each machine also says which side the other is
+  on and whether it actually shares. If both put the other on the same side,
+  or neither shares, the settings window and the log say so and what to change.
+
+Clipboard and file copy work in both directions. Sending input needs X11 or
+XWayland on that machine; see [Known Limitations](#known-limitations).
+
+The waiting computer accepts a connection only from the local network
+(private and link-local addresses, never the internet or itself), and only
+with the shared key. That's the same rule a computer with an address set
+already uses.
 
 Why `peer = "linux"` matters: each machine listens and dials at the same time.
 PowerToys closes the duplicate connection itself. Two mwb-linux instances have
 no such referee, so without this setting they can each keep a different
 connection and stop hearing each other. With it, both machines keep the
 connection dialed by the machine whose name sorts first. A link that goes
-quiet for 20 seconds is dropped and redialed.
+quiet for 20 seconds is dropped and redialed. The settings exchange is an
+mwb-linux addition and is never sent to PowerToys.
 
 ## Settings window
 
@@ -347,12 +365,12 @@ keep the client on a trusted network segment.
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `host` | (required) | Windows machine IP address |
+| `host` | (required) | The other machine's IP address. With `peer = "linux"` it may be empty: this machine then waits for the other to connect |
 | `key` | (required) | MWB security key (from PowerToys) |
 | `name` | hostname | This machine's display name |
 | `port` | 15100 | Base port (message port = 15101) |
-| `remote_width` | 1920 | Remote screen width in pixels |
-| `remote_height` | 1080 | Remote screen height in pixels |
+| `remote_width` | 1920 | Remote screen width in pixels. A Linux peer reports its own, which takes precedence |
+| `remote_height` | 1080 | Remote screen height in pixels. A Linux peer reports its own, which takes precedence |
 | `edge` | left | Screen edge for switching: `left` or `right` |
 | `clipboard` | true | Clipboard sync: set `false` to disable text/image sharing |
 | `accel_multiplier` | 2.0 | Cursor speed when controlling Windows. Lower it (e.g. `1.0`, `0.5`) if the Windows cursor feels too fast |
@@ -362,7 +380,7 @@ keep the client on a trusted network segment.
 | `max_file_size` | 104857600 | Per-transfer cap in bytes. The default matches MWB's own 100 MB limit; a stock Windows peer neither sends nor accepts more |
 | `legacy_crypto` | false | Use the stream encryption PowerToys used before 0.101 (fixed salt and IV, 50,000 PBKDF2 iterations). Only needed for a Windows peer pinned to an older PowerToys |
 | `peer` | windows | What runs on the other machine: `windows` (PowerToys) or `linux` (another mwb-linux). Set `linux` on both machines of a Linux pair; see [Linux to Linux](#linux-to-linux). Other values are rejected |
-| `bidirectional` | false | Send this machine's keyboard and mouse to the other one at the edge, like `-bidi`. Lets the user service run bidirectionally. An explicit `-bidi` or `-bidi=false` flag overrides it |
+| `bidirectional` | false (Windows peer), true (Linux peer) | Send this machine's keyboard and mouse to the other one at the edge, like `-bidi`. Lets the user service run bidirectionally. An explicit `-bidi` or `-bidi=false` flag overrides it |
 | `keyboard_layout` | auto | Inbound Windows-to-Linux keyboard mapping. `auto` detects the local Linux layout when possible; supported profiles include `us`, `de`, `fr`, `be`, `es`, `it`, `gb`, `pt`, `no`/`dk`/`se`/`fi`, `ch`, and `nl` |
 
 > **Config file security:** `config.toml` stores the security key in plaintext.
@@ -492,7 +510,7 @@ scripts/
 - **Keyboard on Windows lock screen** — Keyboard input may not work on the Windows lock screen (Winlogon desktop security restriction)
 - **Middle mouse button auto-scroll** — Middle-click auto-scroll (scroll lock mode) does not work in browsers; normal middle-click works
 - **First connection** — Initial handshake takes ~3-16s depending on Windows MWB state; subsequent reconnects are instant
-- **Bidirectional mode requires X11** — Edge detection queries the X11 server directly; `xdotool` is retained for the infrequent cursor recenter operation. (Device isolation itself is display-server agnostic: `EVIOCGRAB` works identically on X11, Wayland and the console.) Receive-only mode works on Wayland (XWayland session). Native Wayland bidirectional support requires compositor extensions and is not yet implemented.
+- **Bidirectional mode requires X11 or XWayland** — On X11, edge detection queries the X11 server directly. On Wayland, XWayland cannot see the cursor outside X11 windows, so MWB Linux maps an invisible one-pixel XWayland window along the shared edge and switches when the cursor touches it. Shell UI placed on that edge (for example a dock) can cover it; put the other computer on a different side or move the dock. On Wayland the cursor cannot be repositioned on return, so it comes back where it left. (Device isolation itself is display-server agnostic: `EVIOCGRAB` works identically on X11, Wayland and the console.)
 - **Keyboard layout metadata** — PowerToys MWB keyboard packets carry Windows virtual-key codes and flags, but not hardware scan codes or Unicode text. MWB Linux uses `keyboard_layout` profiles for common layouts; unsupported profiles fall back to the original US-compatible mapping. Fully zero-config global layout support requires sender-side scan code or Unicode metadata.
 - **File copy is one file at a time** — Matching MWB itself, folders and
   multi-file selections are not transferred; zip them first. The 100 MB default

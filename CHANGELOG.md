@@ -6,7 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed (Linux pairs only)
+- `bidirectional` now defaults to on for `peer = "linux"`, because two
+  receive-only machines connect but never move the cursor. An explicit `false`
+  is still honored, and PowerToys peers keep receive-only.
+
 ### Fixed
+- The cursor never crossed to the other computer from a Wayland session
+  (GNOME, Zorin, Ubuntu). XWayland only learns the pointer position while it
+  is over an X11 window, so polling saw a frozen position and never reached
+  the edge. On Wayland, an invisible one-pixel XWayland window along the
+  shared edge now reports the touch, and the edge re-arms once the physical
+  mouse moves back inward. A reconnect while the cursor sits on that edge no
+  longer switches straight to the other computer.
+- A Bluetooth LE mouse or keyboard kept moving the local cursor while it also
+  drove the other computer. BlueZ exposes them through uhid, under
+  `/sys/devices/virtual/`, so they were mistaken for software devices and
+  never grabbed.
+- Clicking the screen arrangement now swaps the two screens. Before, a click on
+  this computer's own screen put the other computer on that side, which is how
+  both machines ended up with the other on the same side. The hint names the
+  side the other computer is on, and the "both put the other on the same side"
+  message says which way to fix it.
 - A `/dev/uinput` error now names its actual cause and the one fix that
   applies, instead of printing every setup step twice (once inside the error
   text and again from `main.go`, plus a duplicated last line). The causes are:
@@ -14,6 +35,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   session predates it, or the device not shared with the group.
 
 ### Added
+- Wait/Connect pairing: with `peer = "linux"`, `host` may be empty. That
+  machine then waits for the other to connect, accepting only local-network
+  sources with the shared key, and shows its own address to enter on the
+  other machine.
+- Linux peers exchange their screen size, side and sharing mode when they
+  connect. A peer's measured screen size replaces `remote_width` and
+  `remote_height`. Same-side layouts and "neither computer shares" are
+  reported in the log and the settings window.
 - Linux-to-Linux pairing: set `peer = "linux"` on two mwb-linux machines to
   share one keyboard and mouse with no Windows PC. Both machines keep the same
   connection, a link silent for 20s is redialed, and each machine tells the

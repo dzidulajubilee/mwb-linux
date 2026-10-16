@@ -44,7 +44,7 @@ restarts.
 ### Linux peers
 
 With `peer = "linux"` the other end is another mwb-linux, not PowerToys, and
-three things change. A PowerToys peer (`peer = "windows"`, the default) gets
+six things change. A PowerToys peer (`peer = "windows"`, the default) gets
 none of them.
 
 1. **Pairing.** PowerToys keeps one socket per machine and closes the duplicate.
@@ -69,6 +69,22 @@ none of them.
      is skipped.
    - Inbound keys are decoded positionally (`us` profile), because a Linux
      sender encodes physical key positions.
+4. **Two-way default.** An unset `bidirectional` means on, because two
+   receive-only machines can never move the cursor.
+5. **Wait/Connect.** With no `host`, the machine never dials. Its listeners
+   use `AcceptLocalNetwork`, which lets any RFC1918/ULA or link-local source
+   attempt the handshake (never loopback or a routable address). That is the
+   same set `isAllowedPeer` already admits beyond a configured host. An empty
+   `allowedHost` still means no inbound at all. File copies go to the address
+   the peer connected from (`Conn.RemoteHost`).
+6. **Settings exchange.** After connecting, each peer sends one
+   `LinuxPeerInfo` packet (type 100, a plain 32-byte packet that reuses the
+   MOUSEDATA payload). It carries the screen size measured with xrandr (never
+   the 1920x1080 fallback), the side the receiver sits on, and whether this
+   machine forwards its input. The receiver uses the size instead of
+   `remote_width`/`remote_height`, and reports a side clash or that neither
+   machine shares. An older mwb-linux ignores the packet; PowerToys never
+   receives it.
 
 ## Encryption and handshake
 
@@ -120,9 +136,13 @@ the US-compatible mapping.
 
 ### Linux to Windows
 
-Bidirectional mode requires X11 or XWayland. One persistent X11 connection
-queries the pointer position every 10 ms. When the pointer reaches the selected
-edge, MWB Linux:
+Bidirectional mode requires X11 or XWayland. On X11, one persistent X11
+connection queries the pointer position every 10 ms. On Wayland that position
+is frozen, because XWayland only tracks the pointer over X11 windows, so MWB
+Linux maps a transparent one-pixel override-redirect window along the edge
+and treats its motion events as the edge touch. XWayland sends no leave event,
+so the edge re-arms after the physical mouse moves `rearmDistance` raw units
+inward. When the pointer reaches the selected edge, MWB Linux:
 
 1. Takes an exclusive `EVIOCGRAB` on physical keyboards and pointers.
 2. Sends an entry-position mouse burst to Windows.
@@ -185,8 +205,10 @@ These rules prevent failures that are difficult to recover from or reproduce:
   compares names exactly as they appear on the wire, with trailing padding
   trimmed. Any change to the rule must stay symmetric:
   `preferOutbound(a, b) != preferOutbound(b, a)`.
-- Ownership packets (`notifyPeer`) are sent only for a Linux peer. The
-  PowerToys path must send exactly the packets it always has.
+- Ownership packets (`notifyPeer`) and `LinuxPeerInfo` are sent only for a
+  Linux peer. The PowerToys path must send exactly the packets it always has.
+- `AcceptLocalNetwork` must never widen beyond `isLocalNetwork`. Loopback
+  stays refused, and an empty host stays fail-closed.
 
 Tests named after these invariants live beside the relevant package code.
 

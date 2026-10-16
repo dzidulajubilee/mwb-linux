@@ -78,7 +78,7 @@ def _rounded_rect(cr, x, y, w, h, r):
 
 
 class ArrangementView(Gtk.DrawingArea):
-    """Two screens side by side; click or use arrow keys to move the other one.
+    """Two screens side by side; click to swap them, or use the arrow keys.
 
     The screens are drawn in their real proportions and touch along the edge
     the cursor crosses, which is the one thing the user needs to get right.
@@ -127,15 +127,18 @@ class ArrangementView(Gtk.DrawingArea):
 
     def _update_accessible(self):
         text = f"Screen arrangement: the other computer is on the {self.edge}. Press Left or Right to move it."
-        self.set_tooltip_text("Click the side the other computer is on")
+        self.set_tooltip_text("Click to swap the two screens")
         try:
             self.update_property([Gtk.AccessibleProperty.LABEL], [text])
         except (AttributeError, TypeError):
             pass
 
-    def _clicked(self, _gesture, _n, x, _y):
+    def _clicked(self, _gesture, _n, _x, _y):
+        # Swap rather than "move the other computer to the clicked half": with
+        # the halves fully covered by the two screens, clicking this computer
+        # to say "I am here" used to put the other computer there instead.
         self.grab_focus()
-        self.set_edge("left" if x < self.get_width() / 2 else "right", notify=True)
+        self.set_edge("right" if self.edge == "left" else "left", notify=True)
 
     def _key(self, _ctl, keyval, _code, _state):
         if keyval in (Gdk.KEY_Left, Gdk.KEY_KP_Left):
@@ -293,6 +296,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self._unit = service.UnitState()
         self._poll_busy = False
         self._connected_remote = ""
+        self._peer_screen = None  # (w, h) a connected Linux peer reported
+        self._status_addresses: list[str] = []  # this machine's, as mwb reported them
 
         scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -308,7 +313,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.arrangement = ArrangementView(self._edge_changed)
         arr_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         arr_box.append(self.arrangement)
-        self.arrangement_hint = _dim("Click the side the other computer is on. The highlighted edge is where the pointer crosses.")
+        self.arrangement_hint = _dim("")
         self.arrangement_hint.set_justify(Gtk.Justification.CENTER)
         self.arrangement_hint.set_xalign(0.5)
         arr_box.append(self.arrangement_hint)
@@ -383,7 +388,8 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self.host = Gtk.Entry(placeholder_text="192.168.1.100 or desk.local", hexpand=True)
         self.host.connect("changed", self._changed)
-        _, self.host_err = self._field(grid, 1, "Address", self.host)
+        self.host_hint, self.host_err = self._field(grid, 1, "Address", self.host)
+        self._local_address = service.local_address()
 
         key_row = Gtk.Box(spacing=6)
         self.key = Gtk.PasswordEntry(hexpand=True)
@@ -414,7 +420,7 @@ class MainWindow(Gtk.ApplicationWindow):
         size_row.append(Gtk.Label(label="×"))
         size_row.append(self.rh)
         size_row.append(_dim("pixels", wrap=False))
-        _, self.size_err = self._field(grid, 4, "Other screen size", size_row,
+        self.size_hint, self.size_err = self._field(grid, 4, "Other screen size", size_row,
                                        "Used to place the pointer on the other screen.", label_for=self.rw)
         return box
 
@@ -443,6 +449,7 @@ class MainWindow(Gtk.ApplicationWindow):
             grid, 2, "Copy files", "Copy one file, then paste it on the other computer. Up to 100 MB.")
         for sw in (self.bidi, self.clip, self.files):
             sw.connect("notify::active", self._changed)
+        self.bidi.connect("notify::active", self._bidi_toggled)
         return box
 
     def _build_service(self) -> Gtk.Widget:
@@ -490,6 +497,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def reload(self):
         self._loading = True
+        doc = None
         try:
             try:
                 doc = cf.load(self.config_path)
@@ -501,6 +509,10 @@ class MainWindow(Gtk.ApplicationWindow):
                 self._config_error = f"The settings file can’t be edited here: {exc}. Fix {self.config_path} by hand."
                 self.save_msg.set_text(self._config_error)
             self._loaded = values
+            # Unset in the file means "the default for this peer type", which
+            # should follow the peer choice until the user flips the switch.
+            self._bidi_follows_peer = doc is None or "bidirectional" not in doc.entries
+            self._last_peer = values["peer"]
             self.peer.set_selected(0 if values["peer"] != "linux" else 1)
             self.host.set_text(str(values["host"]))
             self.key.set_text(str(values["key"]))
@@ -536,26 +548,74 @@ class MainWindow(Gtk.ApplicationWindow):
         return {k: v for k, v in self.form_values().items() if self._loaded.get(k) != v}
 
     def _edge_changed(self, _edge):
+        self._update_arrangement_hint()
         self._changed()
+
+    def _update_arrangement_hint(self):
+        other = self.arrangement.remote_name or "The other computer"
+        self.arrangement_hint.set_text(
+            f"{other} is to the {self.arrangement.edge} of this computer. "
+            "Click the screens to swap them. The highlighted edge is where the pointer crosses.")
+
+    def _bidi_toggled(self, *_):
+        if not self._loading:
+            self._bidi_follows_peer = False
+
+    def _follow_peer_default(self, peer: str):
+        """Keep an unset bidirectional at its default when the peer changes."""
+        if peer == getattr(self, "_last_peer", peer):
+            return
+        self._last_peer = peer
+        if getattr(self, "_bidi_follows_peer", False):
+            self._loading = True
+            try:
+                self.bidi.set_active(peer == "linux")
+            finally:
+                self._loading = False
 
     def _changed(self, *_):
         if self._loading:
             return
+        self._follow_peer_default(PEERS[self.peer.get_selected()][0]
+                                  if self.peer.get_selected() < len(PEERS) else "windows")
         v = self.form_values()
         peer = str(v["peer"])
         self.peer_hint.set_text(PEER_HELP[peer])
         self.arrangement.local_name = v["name"] or socket.gethostname()[: cf.NAME_MAX]
         # Once connected, the peer's own name is friendlier than its address.
         self.arrangement.remote_name = self._connected_remote or v["host"]
+        self._update_arrangement_hint()
         self.arrangement.remote_kind = "Linux computer" if peer == "linux" else "Windows PC"
-        if v["remote_height"]:
-            self.arrangement.remote_aspect = int(v["remote_width"]) / int(v["remote_height"])
+        if self._peer_screen:
+            # The peer measured its own screen; mwb uses that, so draw it.
+            pw, ph = self._peer_screen
+            self.arrangement.remote_aspect = pw / ph
+            self.size_hint.set_text(f"{self._connected_remote or 'The other computer'} reports {pw} × {ph}. "
+                                    "mwb uses that automatically; this value is only a fallback.")
+        else:
+            if v["remote_height"]:
+                self.arrangement.remote_aspect = int(v["remote_width"]) / int(v["remote_height"])
+            self.size_hint.set_text("Used to place the pointer on the other screen.")
         self.arrangement.local_aspect = self._local_aspect()
         self.arrangement.refresh()
         self.files.set_sensitive(bool(v["clipboard"]))
         self.files_sub.set_text(
             "Copy one file, then paste it on the other computer. Up to 100 MB."
             if v["clipboard"] else "Needs clipboard sharing, which starts each copy.")
+        # Like pairing PowerToys machines: one waits, the other connects.
+        if peer == "linux":
+            self.host.set_placeholder_text("Leave empty to wait for the other computer")
+            here = self._local_address or (self._status_addresses[0] if self._status_addresses else "")
+            where = (f"this computer’s address, {here}" if here
+                     else "this computer’s address (run hostname -I to see it)")
+            self.host_hint.set_text(
+                f"Leave it empty on one computer, and on the other enter {where}."
+                if v["host"] else
+                f"This computer will wait. On the other computer, enter {where}.")
+        else:
+            self.host.set_placeholder_text("192.168.1.100 or desk.local")
+            self.host_hint.set_text("")
+        self.host_hint.set_visible(peer == "linux")
         self.name_hint.set_visible(peer == "linux")
         self.name_hint.set_text("Must be different from the other computer’s name.")
         if v["bidirectional"] and os.environ.get("XDG_SESSION_TYPE") == "wayland":
@@ -623,7 +683,8 @@ class MainWindow(Gtk.ApplicationWindow):
         if not os.path.exists(self.config_path):
             # A brand-new file needs the required settings even if unchanged.
             fv = self.form_values()
-            for k in ("host", "key", "peer", "edge", "bidirectional"):
+            # bidirectional is left out: unset means the peer type's default.
+            for k in ("host", "key", "peer", "edge"):
                 updates.setdefault(k, fv[k])
         if not updates.get("name", True):
             updates.pop("name")  # empty means "use the hostname"; don't write ""
@@ -705,10 +766,12 @@ class MainWindow(Gtk.ApplicationWindow):
         self._unit = unit
         connected = False
         if st and st.get("state") == "connected":
-            kind, title = "ok", f"Connected to {st.get('remote') or st.get('host')}"
-            detail = "Move the pointer across the highlighted edge to switch computers." \
-                if st.get("bidirectional") else "The other computer can control this one."
+            kind, title, detail = service.describe_connection(st)
             connected = True
+        elif st and st.get("state") == "connecting" and st.get("waiting"):
+            addrs = ", ".join(st.get("addresses") or []) or self._local_address or "this computer’s address"
+            kind, title = "wait", "Waiting for the other computer"
+            detail = f"On the other computer, enter {addrs} as the address, with the same security key."
         elif st and st.get("state") == "connecting":
             kind, title = "wait", f"Looking for {st.get('host')}…"
             detail = "Make sure the other computer is on and using the same security key."
@@ -734,12 +797,20 @@ class MainWindow(Gtk.ApplicationWindow):
         self.status_title.set_markup(f"<b>{GLib.markup_escape_text(title)}</b>")
         self.status_detail.set_text(detail)
         self.status_detail.set_visible(bool(detail))
+        addresses = [str(a) for a in (st.get("addresses") or [])] if st else []
+        if addresses != self._status_addresses:
+            self._status_addresses = addresses
+            self._changed()
         remote = str(st.get("remote") or "") if connected and st else ""
-        if self.arrangement.connected != connected or self._connected_remote != remote:
+        pw = int(st.get("peer_screen_width") or 0) if connected and st else 0
+        ph = int(st.get("peer_screen_height") or 0) if connected and st else 0
+        peer_screen = (pw, ph) if pw > 0 and ph > 0 else None
+        if (self.arrangement.connected != connected or self._connected_remote != remote
+                or self._peer_screen != peer_screen):
             self.arrangement.connected = connected
             self._connected_remote = remote
-            self.arrangement.remote_name = remote or self.host.get_text().strip()
-            self.arrangement.refresh()
+            self._peer_screen = peer_screen
+            self._changed()  # redraws the arrangement and the size hint
 
         # A crash loop is still a started unit: offer Stop to end it.
         started = unit.running or unit.crash_looping

@@ -223,6 +223,8 @@ func main() {
 	statusFile := status.NewWriter(status.Path(), status.Status{
 		Peer:          cfg.Peer,
 		Host:          cfg.Host,
+		Waiting:       cfg.WaitsForPeer(),
+		Addresses:     localAddresses(),
 		Bidirectional: *bidirectional,
 		Edge:          *edgeSide,
 		Clipboard:     clipboardEnabled,
@@ -234,9 +236,18 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	// Start TCP server to accept incoming connections from Windows MWB.
-	// Only the configured host (cfg.Host) is accepted as an inbound peer.
+	// Only the configured host (cfg.Host) is accepted as an inbound peer. A
+	// Linux peer waiting for the other machine has no host, so it accepts a
+	// key-authenticated connection from the local network instead.
+	waiting := cfg.WaitsForPeer()
+	allowedHost := cfg.Host
+	if waiting {
+		allowedHost = network.AcceptLocalNetwork
+		slog.Info("waiting for the other computer to connect; enter one of these addresses there",
+			"addresses", localAddresses(), "port", cfg.MessagePort())
+	}
 	serverStop := make(chan struct{})
-	incomingCh, err := network.ListenAndAccept(cfg.MessagePort(), cfg.Key, cfg.Name, cfg.Host, onFile, serverStop)
+	incomingCh, err := network.ListenAndAccept(cfg.MessagePort(), cfg.Key, cfg.Name, allowedHost, onFile, serverStop)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error starting listener: %v\n", err)
 		fmt.Fprintln(os.Stderr, "Is another mwb instance already running?")
@@ -248,7 +259,7 @@ func main() {
 	// MWB dials skClipboardServer for them, so a client that only listens on
 	// the control port is never offered a file.
 	if onFile != nil {
-		if err := network.ListenFileChannel(cfg.ClipboardPort(), cfg.Key, cfg.Name, cfg.Host, activeMachineID.Load, onFile, serverStop); err != nil {
+		if err := network.ListenFileChannel(cfg.ClipboardPort(), cfg.Key, cfg.Name, allowedHost, activeMachineID.Load, onFile, serverStop); err != nil {
 			slog.Error("inbound file transfers disabled", "port", cfg.ClipboardPort(), "err", err)
 		}
 	}
@@ -256,21 +267,24 @@ func main() {
 	go func() {
 		for {
 			// Race: try outbound connect AND accept inbound — first one wins
-			addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.MessagePort()))
-			slog.Info("connecting", "addr", addr)
 			if err := statusFile.Connecting(); err != nil {
 				slog.Debug("status file not updated", "err", err)
 			}
 
 			connectStop := make(chan struct{})
-			outgoingCh := network.ConnectWithRetry(
-				addr,
-				cfg.Key,
-				cfg.Name,
-				10*time.Second,
-				time.Second,
-				connectStop,
-			)
+			var outgoingCh <-chan *network.Conn
+			if !waiting {
+				addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.MessagePort()))
+				slog.Info("connecting", "addr", addr)
+				outgoingCh = network.ConnectWithRetry(
+					addr,
+					cfg.Key,
+					cfg.Name,
+					10*time.Second,
+					time.Second,
+					connectStop,
+				)
+			}
 
 			// Wait for either outbound or inbound connection
 			var conn *network.Conn
@@ -307,6 +321,7 @@ func main() {
 			handler.OnActivated = nil
 			handler.OnReclaimed = nil
 			handler.OnHideMouse = nil
+			handler.OnPeerInfo = nil
 
 			// Start clipboard sharing on the auto-detected display unless disabled.
 			var clipMgr *clipboard.Manager
@@ -319,7 +334,7 @@ func main() {
 					sender := network.FileSender{
 						// The clipboard port, not addr: that one is the
 						// control channel and MWB answers it with a Handshake.
-						Addr:        net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.ClipboardPort())),
+						Addr:        net.JoinHostPort(peerHost(cfg.Host, conn), strconv.Itoa(cfg.ClipboardPort())),
 						SecurityKey: cfg.Key,
 						MachineName: cfg.Name,
 						MachineID:   conn.MachineID,
@@ -343,6 +358,7 @@ func main() {
 
 			// Start bidirectional capture if enabled
 			var cap *capture.Capturer
+			sharing := false // whether this machine actually forwards its input
 			if *bidirectional {
 				screen := capture.GetScreenSizeXrandr()
 				slog.Info("screen detected", "width", screen.Width, "height", screen.Height)
@@ -384,8 +400,17 @@ func main() {
 				if err := cap.Run(); err != nil {
 					slog.Error("capture start failed", "err", err)
 				} else {
+					sharing = true
 					slog.Info("bidirectional capture enabled", "edge", *edgeSide)
 				}
+			}
+			if err := statusFile.LocalSharing(sharing); err != nil {
+				slog.Debug("status file not updated", "err", err)
+			}
+			if linuxPeer {
+				// Tell the peer our screen, side and sharing mode, and take
+				// its own, so neither user types the other's settings.
+				exchangePeerInfo(conn, handler, cap, *edgeSide, sharing, statusFile)
 			}
 
 			if err := network.ReceiveLoop(conn, handler); err != nil {

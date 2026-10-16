@@ -297,3 +297,42 @@ peer = "linx"
 		t.Fatal("unknown peer value must be rejected, not silently defaulted")
 	}
 }
+
+// Two receive-only Linux machines can never move the cursor, so a Linux pair
+// shares both ways unless told otherwise. PowerToys peers keep receive-only.
+func TestLinuxPeerDefaultsToTwoWay(t *testing.T) {
+	cfg, err := Load(writeConfig(t, "host = \"10.0.0.1\"\nkey = \"SomeKeyHere!1234\"\npeer = \"linux\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.BidirectionalEnabled() {
+		t.Error("unset bidirectional should be on for a Linux peer")
+	}
+	off, err := Load(writeConfig(t, "host = \"10.0.0.1\"\nkey = \"SomeKeyHere!1234\"\npeer = \"linux\"\nbidirectional = false\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if off.BidirectionalEnabled() {
+		t.Error("an explicit bidirectional = false must be honored")
+	}
+}
+
+func TestHostOptionalOnlyForLinuxPeer(t *testing.T) {
+	cfg, err := Load(writeConfig(t, "key = \"SomeKeyHere!1234\"\npeer = \"linux\"\n"))
+	if err != nil {
+		t.Fatalf("a Linux peer without host should wait for a connection: %v", err)
+	}
+	if !cfg.WaitsForPeer() {
+		t.Error("no host with peer = linux should wait for the peer")
+	}
+	if _, err := Load(writeConfig(t, "key = \"SomeKeyHere!1234\"\n")); err == nil {
+		t.Error("a PowerToys peer must still require host")
+	}
+	withHost, err := Load(writeConfig(t, "host = \"10.0.0.1\"\nkey = \"SomeKeyHere!1234\"\npeer = \"linux\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withHost.WaitsForPeer() {
+		t.Error("a configured host means this machine dials")
+	}
+}

@@ -54,6 +54,9 @@ type Handler struct {
 	// machine. Only wired for a Linux peer, which sends HideMouse when it takes
 	// the cursor back; nil keeps the original log-only handling.
 	OnHideMouse func()
+	// OnPeerInfo optionally receives a Linux peer's settings (LinuxPeerInfo).
+	// Only wired for peer = "linux"; nil ignores the packet.
+	OnPeerInfo func(protocol.PeerInfo)
 	// KeyboardLayout selects the inbound Windows VK -> Linux evdev mapping.
 	KeyboardLayout  string
 	pendingCtrl     bool
@@ -117,6 +120,15 @@ func (h *Handler) HandlePacket(pkt *protocol.Packet) {
 		protocol.Clipboard, protocol.ClipboardAsk, protocol.ClipboardPush:
 		if h.Clipboard != nil {
 			h.Clipboard.HandlePacket(pkt)
+		}
+	case protocol.LinuxPeerInfo:
+		info, ok := pkt.PeerInfo()
+		if !ok {
+			slog.Debug("ignoring LinuxPeerInfo in an unknown format", "src", pkt.Src)
+			return
+		}
+		if h.OnPeerInfo != nil {
+			h.OnPeerInfo(info)
 		}
 	case protocol.Hello, protocol.Awake, protocol.HandshakeAck:
 		// expected control packets — ignore silently

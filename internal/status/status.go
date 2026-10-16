@@ -30,17 +30,27 @@ const (
 
 // Status is the JSON document mwb-gui reads.
 type Status struct {
-	State         string    `json:"state"`
-	Peer          string    `json:"peer"`
-	Host          string    `json:"host"`
-	Remote        string    `json:"remote,omitempty"`
-	Outbound      bool      `json:"outbound,omitempty"`
-	Bidirectional bool      `json:"bidirectional"`
-	Edge          string    `json:"edge"`
-	Clipboard     bool      `json:"clipboard"`
-	PID           int       `json:"pid"`
-	Version       string    `json:"version"`
-	Since         time.Time `json:"since"`
+	State         string   `json:"state"`
+	Peer          string   `json:"peer"`
+	Host          string   `json:"host"`
+	Waiting       bool     `json:"waiting,omitempty"`   // a Linux peer accepting, not dialing
+	Addresses     []string `json:"addresses,omitempty"` // where the other machine can reach this one
+	Remote        string   `json:"remote,omitempty"`
+	Outbound      bool     `json:"outbound,omitempty"`
+	Bidirectional bool     `json:"bidirectional"`
+	Edge          string   `json:"edge"`
+	// Sharing is whether this machine actually forwards its input: requested
+	// and capture started. Known once connected.
+	Sharing *bool `json:"sharing,omitempty"`
+	// Peer* come from a Linux peer's LinuxPeerInfo; absent until it arrives.
+	PeerScreenWidth  int32     `json:"peer_screen_width,omitempty"`
+	PeerScreenHeight int32     `json:"peer_screen_height,omitempty"`
+	PeerEdge         string    `json:"peer_edge,omitempty"`
+	PeerSharing      *bool     `json:"peer_sharing,omitempty"`
+	Clipboard        bool      `json:"clipboard"`
+	PID              int       `json:"pid"`
+	Version          string    `json:"version"`
+	Since            time.Time `json:"since"`
 }
 
 // Path returns the status file location, or "" when XDG_RUNTIME_DIR is unset.
@@ -72,6 +82,8 @@ func (w *Writer) Connecting() error {
 		s.State = StateConnecting
 		s.Remote = ""
 		s.Outbound = false
+		s.Sharing = nil
+		s.PeerScreenWidth, s.PeerScreenHeight, s.PeerEdge, s.PeerSharing = 0, 0, "", nil
 	})
 }
 
@@ -81,6 +93,21 @@ func (w *Writer) Connected(remote string, outbound bool) error {
 		s.State = StateConnected
 		s.Remote = remote
 		s.Outbound = outbound
+	})
+}
+
+// LocalSharing records whether this machine forwards its input on this
+// connection.
+func (w *Writer) LocalSharing(on bool) error {
+	return w.write(func(s *Status) { s.Sharing = &on })
+}
+
+// Peer records the settings a Linux peer reported about itself.
+func (w *Writer) Peer(width, height int32, edge string, sharing bool) error {
+	return w.write(func(s *Status) {
+		s.PeerScreenWidth, s.PeerScreenHeight = width, height
+		s.PeerEdge = edge
+		s.PeerSharing = &sharing
 	})
 }
 
@@ -104,7 +131,10 @@ func (w *Writer) write(update func(*Status)) error {
 
 	s := w.base
 	update(&s)
-	s.Since = time.Now().UTC().Truncate(time.Second)
+	// Since marks the last change of state, not of any field.
+	if s.State != w.base.State || s.Since.IsZero() {
+		s.Since = time.Now().UTC().Truncate(time.Second)
+	}
 	w.base = s
 
 	data, err := json.MarshalIndent(s, "", "  ")
