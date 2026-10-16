@@ -400,3 +400,22 @@ func TestHideMouseWithoutHookIsHarmless(t *testing.T) {
 	h := &Handler{}
 	h.HandlePacket(&protocol.Packet{Type: protocol.HideMouse})
 }
+
+func TestLinuxPeerInfoReachesHook(t *testing.T) {
+	var got protocol.PeerInfo
+	calls := 0
+	h := &Handler{OnPeerInfo: func(i protocol.PeerInfo) { got = i; calls++ }}
+	want := protocol.PeerInfo{ScreenWidth: 2560, ScreenHeight: 1440, Edge: "right", Sharing: true}
+	h.HandlePacket(protocol.NewPeerInfoPacket(1, 2, want))
+	if calls != 1 || got != want {
+		t.Fatalf("OnPeerInfo got %+v (%d calls), want %+v", got, calls, want)
+	}
+	// Without a hook (PowerToys path) and with an unknown version: ignored.
+	(&Handler{}).HandlePacket(protocol.NewPeerInfoPacket(1, 2, want))
+	bad := protocol.NewPeerInfoPacket(1, 2, want)
+	bad.Mouse.DwFlags = 42
+	h.HandlePacket(bad)
+	if calls != 1 {
+		t.Fatal("an unknown-version packet reached the hook")
+	}
+}

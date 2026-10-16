@@ -104,3 +104,33 @@ func read(t *testing.T, path string) Status {
 	}
 	return s
 }
+
+func TestPeerFieldsAndSince(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mwb", "status.json")
+	w := NewWriter(path, Status{Peer: "linux"})
+	if err := w.Connected("laptop", false); err != nil {
+		t.Fatal(err)
+	}
+	since := read(t, path).Since
+	if err := w.LocalSharing(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Peer(1920, 1080, "right", false); err != nil {
+		t.Fatal(err)
+	}
+	got := read(t, path)
+	if got.Sharing == nil || !*got.Sharing || got.PeerSharing == nil || *got.PeerSharing ||
+		got.PeerScreenWidth != 1920 || got.PeerEdge != "right" {
+		t.Fatalf("peer fields: %+v", got)
+	}
+	if !got.Since.Equal(since) {
+		t.Fatal("Since changed although the state did not")
+	}
+	// Reconnecting forgets the old peer.
+	if err := w.Connecting(); err != nil {
+		t.Fatal(err)
+	}
+	if got = read(t, path); got.PeerSharing != nil || got.Sharing != nil || got.PeerScreenWidth != 0 || got.PeerEdge != "" {
+		t.Fatalf("stale peer fields after reconnect: %+v", got)
+	}
+}

@@ -8,11 +8,13 @@ GUI never needs or asks for root.
 from __future__ import annotations
 
 import grp
+import ipaddress
 import json
 import os
 import pwd
 import shlex
 import shutil
+import socket
 import subprocess
 from dataclasses import dataclass
 
@@ -184,6 +186,41 @@ def uinput_problem(path: str = UINPUT) -> tuple[str, str] | None:
     return diagnose_uinput(exists, accessible, group_exists, in_db, in_now)
 
 
+# --- this computer's address -------------------------------------------------
+
+def local_address() -> str:
+    """This computer's address on its local network, or "".
+
+    A UDP socket "connected" to a private address sends nothing; it only makes
+    the kernel pick the outgoing interface, whose address is what the other
+    computer types in. Only private addresses are returned, matching what a
+    waiting mwb accepts connections from.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))
+        ip = s.getsockname()[0]
+    except OSError:
+        return ""
+    finally:
+        s.close()
+    return ip if is_lan_address(ip) else ""
+
+
+# Exactly Go's net.IP.IsPrivate for IPv4 (RFC 1918), which the client uses.
+# Python's is_private is broader (it includes documentation and other
+# reserved ranges), so it is not used here.
+_LAN_V4 = tuple(ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+
+
+def is_lan_address(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return addr.version == 4 and any(addr in n for n in _LAN_V4)
+
+
 # --- status file written by the client (internal/status) ---------------------
 
 def status_path() -> str:
@@ -222,3 +259,49 @@ def read_status(path: str | None = None) -> dict | None:
     if not isinstance(data, dict) or not _pid_alive(data.get("pid")):
         return None
     return data
+
+
+# --- what a connected status means for the user ---------------------------------
+
+CONTROL_SWITCH = "Control the other computer from here"
+
+
+def describe_connection(st: dict) -> tuple[str, str, str]:
+    """(kind, title, detail) for a connected status.
+
+    kind is "ok", "wait" or "error". With a Linux peer that reported its
+    settings, this states what actually works in each direction; otherwise it
+    falls back to this machine's own setting, as before.
+    """
+    remote = st.get("remote") or st.get("host") or "the other computer"
+    title = f"Connected to {remote}"
+    peer_sharing = st.get("peer_sharing")
+    if peer_sharing is None:
+        # A PowerToys peer, or a Linux peer that has not reported yet.
+        if st.get("bidirectional"):
+            return "ok", title, "Move the pointer across the highlighted edge to switch computers."
+        return "ok", title, "The other computer can control this one."
+
+    edge = st.get("edge")
+    if st.get("peer_edge") == edge:
+        other_side = "right" if edge == "left" else "left"
+        return ("error", f"{title}, but both put the other on the {edge}",
+                f"This computer has {remote} on its {edge}, and {remote} has this one on its {edge} too. "
+                f"If {remote} actually sits to the {other_side} of this computer, swap the screens here and save; "
+                f"otherwise swap them on {remote}.")
+    here = st.get("sharing")
+    if here is None:
+        here = bool(st.get("bidirectional"))
+    wanted_here = bool(st.get("bidirectional"))
+    if here and peer_sharing:
+        return "ok", title, "Move the pointer across the highlighted edge on either computer."
+    if here:
+        return ("ok", title,
+                f"This computer controls {remote}. To control this one from there, "
+                f"turn on “{CONTROL_SWITCH}” on {remote}.")
+    hint = ("Sharing from this computer could not start; it needs an Xorg session."
+            if wanted_here else f"To control {remote} from here, turn on “{CONTROL_SWITCH}” below.")
+    if peer_sharing:
+        return "ok", title, f"{remote} can control this computer. {hint}"
+    return ("wait", f"{title}, but neither computer shares its mouse",
+            f"Turn on “{CONTROL_SWITCH}” on at least one of them. {hint if wanted_here else ''}".strip())

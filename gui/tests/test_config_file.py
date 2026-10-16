@@ -201,5 +201,18 @@ class ValidateTests(unittest.TestCase):
         self.assertEqual(cf.warnings(self.good()), {})
 
 
+class LinuxPeerDefaultsTests(unittest.TestCase):
+    def test_bidirectional_default_follows_peer(self):
+        # Mirrors config.BidirectionalEnabled in Go.
+        self.assertIs(cf.parse('host = "a"\n').values()["bidirectional"], False)
+        self.assertIs(cf.parse('host = "a"\npeer = "linux"\n').values()["bidirectional"], True)
+        self.assertIs(cf.parse('peer = "linux"\nbidirectional = false\n').values()["bidirectional"], False)
+
+    def test_host_optional_only_for_linux(self):
+        base = dict(cf.DEFAULTS, key="0123456789abcdef", host="")
+        self.assertIn("host", cf.validate(base))
+        self.assertNotIn("host", cf.validate(dict(base, peer="linux")))
+
+
 if __name__ == "__main__":
     unittest.main()

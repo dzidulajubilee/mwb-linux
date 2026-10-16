@@ -92,6 +92,10 @@ class Document:
         out = dict(DEFAULTS)
         for k, e in self.entries.items():
             out[k] = e.value
+        if "bidirectional" not in self.entries:
+            # Mirrors config.BidirectionalEnabled: unset means two-way for a
+            # Linux peer and receive-only for a PowerToys one.
+            out["bidirectional"] = out["peer"] == "linux"
         return out
 
 
@@ -363,7 +367,8 @@ def save(updates: dict[str, object], path: str = DEFAULT_PATH) -> None:
 def validate(values: dict[str, object]) -> dict[str, str]:
     """Return {key: message} for values the client would reject or misuse."""
     problems: dict[str, str] = {}
-    if not str(values.get("host", "")).strip():
+    if not str(values.get("host", "")).strip() and values.get("peer") != "linux":
+        # A Linux peer may leave it empty to wait for the other computer.
         problems["host"] = "Enter the other computer's address."
     if not str(values.get("key", "")):
         problems["key"] = "Enter the security key, or generate one."

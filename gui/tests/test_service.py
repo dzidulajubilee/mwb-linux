@@ -104,5 +104,64 @@ class CrashLoopTests(unittest.TestCase):
         self.assertFalse(service.UnitState(active="active", sub="running").crash_looping)
 
 
+class LanAddressTests(unittest.TestCase):
+    def test_matches_go_is_private(self):
+        for ip, want in {"10.249.1.209": True, "172.16.4.2": True, "172.31.255.1": True,
+                         "192.168.1.5": True, "172.32.0.1": False, "192.0.2.2": False,
+                         "127.0.0.1": False, "8.8.8.8": False, "nonsense": False}.items():
+            self.assertIs(service.is_lan_address(ip), want, ip)
+
+    def test_local_address_is_lan_or_empty(self):
+        ip = service.local_address()
+        self.assertTrue(ip == "" or service.is_lan_address(ip))
+
+
+class DescribeConnectionTests(unittest.TestCase):
+    base = {"state": "connected", "remote": "mystogan", "edge": "left"}
+
+    def d(self, **kw):
+        return service.describe_connection(dict(self.base, **kw))
+
+    def test_windows_peer_unchanged(self):
+        self.assertEqual(self.d(bidirectional=False)[2], "The other computer can control this one.")
+        self.assertIn("highlighted edge", self.d(bidirectional=True)[2])
+
+    def test_both_share(self):
+        kind, _, detail = self.d(bidirectional=True, sharing=True, peer_sharing=True, peer_edge="right")
+        self.assertEqual(kind, "ok")
+        self.assertIn("either computer", detail)
+
+    def test_neither_shares(self):
+        # The situation that looked like "connected but nothing happens".
+        kind, title, detail = self.d(bidirectional=False, sharing=False, peer_sharing=False, peer_edge="right")
+        self.assertEqual(kind, "wait")
+        self.assertIn("neither computer shares", title)
+        self.assertIn(service.CONTROL_SWITCH, detail)
+
+    def test_only_peer_shares(self):
+        kind, _, detail = self.d(bidirectional=False, sharing=False, peer_sharing=True, peer_edge="right")
+        self.assertEqual(kind, "ok")
+        self.assertIn("mystogan can control this computer", detail)
+
+    def test_only_here_shares(self):
+        _, _, detail = self.d(bidirectional=True, sharing=True, peer_sharing=False, peer_edge="right")
+        self.assertIn("This computer controls mystogan", detail)
+
+    def test_capture_failed(self):
+        _, _, detail = self.d(bidirectional=True, sharing=False, peer_sharing=True, peer_edge="right")
+        self.assertIn("Xorg", detail)
+
+    def test_side_clash(self):
+        kind, title, _ = self.d(bidirectional=True, sharing=True, peer_sharing=True, peer_edge="left")
+        self.assertEqual(kind, "error")
+        self.assertIn("both put the other on the left", title)
+
+    def test_side_clash_says_which_way_to_fix(self):
+        _, _, detail = self.d(bidirectional=True, sharing=True, peer_sharing=True,
+                              edge="left", peer_edge="left", remote="mystogan")
+        self.assertIn("sits to the right of this computer", detail)
+        self.assertIn("swap them on mystogan", detail)
+
+
 if __name__ == "__main__":
     unittest.main()

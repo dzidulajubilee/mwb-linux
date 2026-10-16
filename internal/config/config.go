@@ -63,8 +63,10 @@ type Config struct {
 	Peer string `toml:"peer"`
 
 	// Bidirectional sends local input to the peer when the cursor crosses the
-	// configured edge, like the -bidi flag. nil = off, so the installed service
-	// stays receive-only unless asked. An explicit -bidi flag overrides it.
+	// configured edge, like the -bidi flag. nil = off for a PowerToys peer, so
+	// the installed service stays receive-only unless asked, and on for a
+	// Linux peer, because two receive-only machines can never move the cursor
+	// at all. An explicit -bidi flag overrides it.
 	Bidirectional *bool `toml:"bidirectional"`
 }
 
@@ -78,9 +80,6 @@ func Load(path string) (*Config, error) {
 	var cfg Config
 	if _, err := toml.DecodeFile(path, &cfg); err != nil {
 		return nil, fmt.Errorf("decode config: %w", err)
-	}
-	if cfg.Host == "" {
-		return nil, fmt.Errorf("config: host is required")
 	}
 	if cfg.Key == "" {
 		return nil, fmt.Errorf("config: key is required")
@@ -123,6 +122,11 @@ func Load(path string) (*Config, error) {
 	default:
 		// Fail closed: a typo must not silently pick a pairing strategy.
 		return nil, fmt.Errorf("config: peer must be %q or %q, got %q", PeerWindows, PeerLinux, cfg.Peer)
+	}
+	// A Linux peer may leave host empty and wait for the other machine to
+	// connect (see WaitsForPeer). A PowerToys peer always needs it, as before.
+	if cfg.Host == "" && cfg.Peer != PeerLinux {
+		return nil, fmt.Errorf("config: host is required")
 	}
 
 	// The config holds the plaintext security key — the only secret protecting
@@ -197,9 +201,20 @@ func (c *Config) LinuxPeer() bool {
 }
 
 // BidirectionalEnabled reports whether config asks for bidirectional input.
-// An absent setting means receive-only, preserving the prior default.
+// An absent setting means receive-only for a PowerToys peer, preserving the
+// prior default, and two-way for a Linux peer, as PowerToys pairs behave.
 func (c *Config) BidirectionalEnabled() bool {
-	return c.Bidirectional != nil && *c.Bidirectional
+	if c.Bidirectional == nil {
+		return c.LinuxPeer()
+	}
+	return *c.Bidirectional
+}
+
+// WaitsForPeer reports whether this machine only accepts a connection from
+// the other one instead of dialing it: a Linux peer with no host set. The
+// other machine dials this one's address, as when pairing PowerToys machines.
+func (c *Config) WaitsForPeer() bool {
+	return c.LinuxPeer() && c.Host == ""
 }
 
 // FileDirectory resolves the legacy direct-download directory.

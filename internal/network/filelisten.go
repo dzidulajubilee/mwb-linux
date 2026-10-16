@@ -28,7 +28,7 @@ func ListenFileChannel(port int, securityKey, machineName, allowedHost string, a
 		return fmt.Errorf("file channel listener needs the active control machine ID")
 	}
 
-	allowedIPs, resolveErr := resolveAllowedPeer(allowedHost)
+	allow, allowedIPs, resolveErr := peerFilter(allowedHost)
 	if resolveErr != nil {
 		slog.Warn("could not resolve configured peer; inbound file transfers disabled",
 			"host", allowedHost, "err", resolveErr)
@@ -69,7 +69,7 @@ func ListenFileChannel(port int, securityKey, machineName, allowedHost string, a
 				continue
 			}
 
-			if !isAllowedPeer(raw.RemoteAddr(), allowedIPs) {
+			if !allow(raw.RemoteAddr()) {
 				slog.Warn("rejected inbound file connection from unexpected source",
 					"remote", raw.RemoteAddr(), "allowedHost", allowedHost)
 				_ = raw.Close()
