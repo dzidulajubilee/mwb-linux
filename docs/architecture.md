@@ -2,7 +2,8 @@
 
 MWB Linux is a native Linux client for Microsoft PowerToys Mouse Without
 Borders. It can receive input from Windows and, in bidirectional mode, send
-Linux input back to Windows.
+Linux input back to Windows. Two mwb-linux instances can also pair with each
+other (`peer = "linux"`).
 
 ## Runtime overview
 
@@ -39,6 +40,35 @@ The base port is configurable. The control port is always `base + 1`.
 MWB Linux listens and dials at the same time. The first authenticated control
 connection wins, which keeps reconnects quick after either machine sleeps or
 restarts.
+
+### Linux peers
+
+With `peer = "linux"` the other end is another mwb-linux, not PowerToys, and
+three things change. A PowerToys peer (`peer = "windows"`, the default) gets
+none of them.
+
+1. **Pairing.** PowerToys keeps one socket per machine and closes the duplicate.
+   Two mwb-linux peers have nobody doing that job. Under first-wins, each can
+   keep a different socket and then wait forever on one the other never reads.
+   `network.SelectLinuxPeer` makes both ends keep the connection dialed by the
+   machine whose name sorts first. If that direction cannot connect (for
+   example, a firewall on one side), the other connection is used after
+   `LinuxPeerGrace` (3s). Names must differ. Equal names fall back to
+   first-wins with a warning.
+2. **Idle timeout.** A Linux-peer control connection that has been silent for
+   `LinuxPeerIdleTimeout` (20s) is dropped and redialed. Heartbeats run every
+   5s, so this only fires on a dead or mismatched link.
+3. **Cursor ownership.** PowerToys works out where the cursor is from its own
+   machine matrix. A Linux peer can't, so the capturer tells it:
+   - It sends `MachineSwitched` when the cursor crosses to the peer.
+   - It sends `HideMouse` when it takes the cursor back. That covers the
+     virtual-edge return, Ctrl+Alt+Right, and absolute-pointer recovery.
+   - On `HideMouse`, the receiver isolates and forwards its own local input,
+     so both machines' keyboards and mice follow one shared cursor.
+   - The far-edge `AcceptsActivation` guard exists for PowerToys matrices and
+     is skipped.
+   - Inbound keys are decoded positionally (`us` profile), because a Linux
+     sender encodes physical key positions.
 
 ## Encryption and handshake
 
@@ -119,6 +149,19 @@ Text and images use clipboard packets on the control stream. Files use the
 separate clipboard port and have their own handshake and framing. See
 [File transfer](file-transfer.md) for the full flow and safety rules.
 
+## Status file
+
+The client writes its connection state as JSON to
+`$XDG_RUNTIME_DIR/mwb/status.json`, and `mwb-gui` reads it.
+
+- It holds no secrets.
+- The directory is 0700 and the file is 0600.
+- Each update is written to a temporary file and renamed into place.
+- The file is removed on clean shutdown. Readers ignore a file whose recorded
+  PID no longer exists.
+- When `XDG_RUNTIME_DIR` is unset, nothing is written. The client never falls
+  back to a shared directory.
+
 ## Important invariants
 
 These rules prevent failures that are difficult to recover from or reproduce:
@@ -138,6 +181,12 @@ These rules prevent failures that are difficult to recover from or reproduce:
   edge must not reclaim the Linux cursor.
 - The cursor must move away from an edge before switching can re-arm. This gate
   prevents immediate bounce loops in both directions.
+- Two Linux peers must evaluate the same pairing rule. `preferOutbound`
+  compares names exactly as they appear on the wire, with trailing padding
+  trimmed. Any change to the rule must stay symmetric:
+  `preferOutbound(a, b) != preferOutbound(b, a)`.
+- Ownership packets (`notifyPeer`) are sent only for a Linux peer. The
+  PowerToys path must send exactly the packets it always has.
 
 Tests named after these invariants live beside the relevant package code.
 
@@ -154,6 +203,8 @@ Tests named after these invariants live beside the relevant package code.
 | `internal/network` | TCP connections, handshakes, routing, and heartbeats |
 | `internal/protocol` | Packet encoding, encryption, and protocol constants |
 | `internal/selfupdate` | Verified GitHub release updates |
+| `internal/status` | Connection status file for the settings window |
+| `gui/` | `mwb-gui` settings window (Python, GTK 4; separate from the binary) |
 
 ## Platform boundary
 

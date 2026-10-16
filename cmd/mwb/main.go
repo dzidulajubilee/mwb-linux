@@ -22,6 +22,7 @@ import (
 	"github.com/lucky-verma/mwb-linux/internal/input"
 	"github.com/lucky-verma/mwb-linux/internal/network"
 	"github.com/lucky-verma/mwb-linux/internal/selfupdate"
+	"github.com/lucky-verma/mwb-linux/internal/status"
 )
 
 // version is stamped at release time via -ldflags "-X main.version=...".
@@ -43,6 +44,16 @@ func runSubcommand() bool {
 	switch os.Args[1] {
 	case "version", "--version", "-version":
 		fmt.Println("mwb", version)
+		return true
+
+	case "genkey":
+		// Prints only the key, so it can be captured: KEY=$(mwb genkey).
+		k, err := config.GenerateKey()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "genkey failed:", err)
+			os.Exit(1)
+		}
+		fmt.Println(k)
 		return true
 
 	case "update":
@@ -68,6 +79,18 @@ func runSubcommand() bool {
 		return true
 	}
 	return false
+}
+
+// flagWasSet reports whether name was given on the command line, so config can
+// supply a default without overriding an explicit flag in either direction.
+func flagWasSet(name string) bool {
+	set := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
 }
 
 func main() {
@@ -110,10 +133,31 @@ func main() {
 		*edgeSide = "right" // final fallback
 	}
 
+	// bidirectional = true in config enables it for the service; an explicit
+	// -bidi or -bidi=false on the command line still wins.
+	if !flagWasSet("bidi") {
+		*bidirectional = cfg.BidirectionalEnabled()
+	}
+	linuxPeer := cfg.LinuxPeer()
+
 	// Clipboard runs by default. Either config (clipboard = false) or the
 	// --no-clipboard flag disables it; the flag wins over config.
 	clipboardEnabled := cfg.ClipboardEnabled() && !*noClipboard
 	keyboardLayout := input.ResolveKeyboardLayout(cfg.KeyboardLayout)
+	if linuxPeer {
+		// A Linux sender encodes physical key positions through the US table,
+		// so decoding with a Windows layout profile would move keys (Y and Z
+		// on a German keyboard, for instance). Decode positionally and let
+		// this desktop's own layout produce the character.
+		switch input.CanonicalKeyboardLayout(cfg.KeyboardLayout) {
+		case "auto", "":
+			keyboardLayout = "us"
+		case "us":
+		default:
+			slog.Warn("peer = linux sends physical key positions; keyboard_layout other than auto/us may type the wrong characters",
+				"keyboard_layout", keyboardLayout)
+		}
+	}
 
 	// PowerToys 0.101 changed the stream encryption. Pick the scheme before any
 	// connection is attempted.
@@ -123,7 +167,7 @@ func main() {
 	}
 
 	slog.Debug("debug logging enabled")
-	slog.Info("mwb starting", "host", cfg.Host, "port", cfg.MessagePort(), "name", cfg.Name, "bidirectional", *bidirectional, "edge", *edgeSide, "clipboard", clipboardEnabled, "keyboard_layout", keyboardLayout)
+	slog.Info("mwb starting", "host", cfg.Host, "port", cfg.MessagePort(), "name", cfg.Name, "peer", cfg.Peer, "bidirectional", *bidirectional, "edge", *edgeSide, "clipboard", clipboardEnabled, "keyboard_layout", keyboardLayout)
 
 	mouse, err := input.CreateVirtualMouse("mwb-mouse")
 	if err != nil {
@@ -180,6 +224,17 @@ func main() {
 		}
 	}
 
+	// Connection state for mwb-gui; a no-op when XDG_RUNTIME_DIR is unset.
+	statusFile := status.NewWriter(status.Path(), status.Status{
+		Peer:          cfg.Peer,
+		Host:          cfg.Host,
+		Bidirectional: *bidirectional,
+		Edge:          *edgeSide,
+		Clipboard:     clipboardEnabled,
+		PID:           os.Getpid(),
+		Version:       version,
+	})
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
@@ -208,6 +263,9 @@ func main() {
 			// Race: try outbound connect AND accept inbound — first one wins
 			addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.MessagePort()))
 			slog.Info("connecting", "addr", addr)
+			if err := statusFile.Connecting(); err != nil {
+				slog.Debug("status file not updated", "err", err)
+			}
 
 			connectStop := make(chan struct{})
 			outgoingCh := network.ConnectWithRetry(
@@ -221,17 +279,39 @@ func main() {
 
 			// Wait for either outbound or inbound connection
 			var conn *network.Conn
-			select {
-			case conn = <-outgoingCh:
-				slog.Info("connected (outbound)", "remote", conn.RemoteName)
-			case conn = <-incomingCh:
-				slog.Info("connected (inbound)", "remote", conn.RemoteName)
+			var outbound bool
+			if linuxPeer {
+				// Two mwb-linux peers must agree on one of the two sockets;
+				// see network.SelectLinuxPeer.
+				conn, outbound = network.SelectLinuxPeer(outgoingCh, incomingCh, network.LinuxPeerGrace)
+				if conn == nil {
+					// Only reachable if the listener has shut down. Exit
+					// non-zero rather than idle, so systemd restarts us.
+					close(connectStop)
+					slog.Error("no connection source left; exiting so the service restarts")
+					statusFile.Remove()
+					os.Exit(1)
+				}
+				conn.SetIdleTimeout(network.LinuxPeerIdleTimeout)
+				slog.Info("connected (linux peer)", "remote", conn.RemoteName, "outbound", outbound)
+			} else {
+				select {
+				case conn = <-outgoingCh:
+					outbound = true
+					slog.Info("connected (outbound)", "remote", conn.RemoteName)
+				case conn = <-incomingCh:
+					slog.Info("connected (inbound)", "remote", conn.RemoteName)
+				}
 			}
 			close(connectStop)
+			if err := statusFile.Connected(conn.RemoteName, outbound); err != nil {
+				slog.Debug("status file not updated", "err", err)
+			}
 			activeMachineID.Store(conn.MachineID)
 			handler.OnBecameActive = nil
 			handler.OnActivated = nil
 			handler.OnReclaimed = nil
+			handler.OnHideMouse = nil
 
 			// Start clipboard sharing on the auto-detected display unless disabled.
 			var clipMgr *clipboard.Manager
@@ -295,6 +375,17 @@ func main() {
 				handler.OnActivated = func() { cap.SetActive(true) }
 				handler.OnReclaimed = func() { cap.SetActive(true) }
 
+				if linuxPeer {
+					cap.SetLinuxPeer(true)
+					// The far-edge guard exists for PowerToys machine matrices.
+					// A Linux peer sends MachineSwitched only when its cursor
+					// crosses its own configured edge, and this side's virtual
+					// cursor cannot know where the peer's cursor is, so the
+					// guard would reject every legitimate arrival.
+					handler.ShouldActivate = nil
+					handler.OnHideMouse = cap.YieldToPeer
+				}
+
 				if err := cap.Run(); err != nil {
 					slog.Error("capture start failed", "err", err)
 				} else {
@@ -324,4 +415,5 @@ func main() {
 
 	sig := <-sigCh
 	slog.Info("shutting down", "signal", sig)
+	statusFile.Remove()
 }

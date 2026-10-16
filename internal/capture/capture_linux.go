@@ -97,6 +97,13 @@ type Capturer struct {
 	// OnActivated runs whenever this capturer transitions from remote control
 	// back to local ownership, including its own virtual-edge return path.
 	OnActivated func()
+
+	// linuxPeer enables the cursor-ownership packets an mwb-linux peer needs:
+	// MachineSwitched when the cursor crosses to it and HideMouse when this
+	// machine takes it back. PowerToys works this out itself, so they are only
+	// sent for a Linux peer. Set before Run and not changed afterwards.
+	linuxPeer bool
+	sendFn    func(*protocol.Packet) error // test seam; nil uses conn.SendPacket
 }
 
 // trackedDevice is one open /dev/input/event* node.
@@ -285,6 +292,91 @@ func (c *Capturer) SetAccelMultiplier(m float64) {
 	defer c.mu.Unlock()
 	c.accelMult = m
 	slog.Info("cursor acceleration multiplier set", "accel_multiplier", m)
+}
+
+// SetLinuxPeer marks the peer as another mwb-linux instance. Call before Run.
+func (c *Capturer) SetLinuxPeer(on bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.linuxPeer = on
+}
+
+// notifyPeer sends a cursor-ownership packet to a Linux peer. It is a no-op for
+// a PowerToys peer, so that path sends exactly what it always has. The caller
+// must not hold c.mu.
+func (c *Capturer) notifyPeer(t protocol.PackageType) {
+	c.mu.Lock()
+	linux, conn, send := c.linuxPeer, c.conn, c.sendFn
+	c.mu.Unlock()
+	if !linux {
+		return
+	}
+	pkt := &protocol.Packet{Type: t}
+	if send == nil {
+		if conn == nil {
+			return
+		}
+		pkt.Src, pkt.Des = conn.MachineID, conn.RemoteID
+		send = conn.SendPacket
+	}
+	if err := send(pkt); err != nil {
+		slog.Debug("send cursor ownership packet failed", "type", t, "err", err)
+	}
+}
+
+// reclaimLocal returns the cursor to this machine because of something done
+// here (hotkey, absolute pointer), and tells a Linux peer it no longer has it.
+func (c *Capturer) reclaimLocal() {
+	wasActive := c.IsActive()
+	c.SetActive(true)
+	if !wasActive {
+		c.notifyPeer(protocol.HideMouse)
+	}
+}
+
+// YieldToPeer handles a Linux peer's HideMouse: the peer took the cursor back
+// while it was on this machine. Local input is isolated and forwarded, as it is
+// after crossing the edge locally, so either machine's keyboard and mouse
+// follow the single shared cursor. The virtual remote cursor starts at the
+// same landing point a local crossing uses.
+func (c *Capturer) YieldToPeer() {
+	c.mu.Lock()
+	if !c.active || c.stopped {
+		c.mu.Unlock()
+		return
+	}
+	pointer := c.pointer
+	c.mu.Unlock()
+
+	// Query outside the lock: it is a round trip to the X server.
+	y := int32(-1)
+	if pointer != nil {
+		if _, py, err := pointer.Position(); err == nil {
+			y = py
+		}
+	}
+
+	c.mu.Lock()
+	if !c.active || c.stopped {
+		c.mu.Unlock()
+		return
+	}
+	if y < 0 || y >= c.screen.Height {
+		y = c.screen.Height / 2
+	}
+	slog.Info("peer took the cursor back; forwarding local input to it")
+	c.active = false
+	c.switchSent = time.Now()
+	c.edgeY = y
+	c.remoteX, _ = c.remoteEntryLocked()
+	if c.screen.Height > 0 {
+		c.remoteY = int32(int64(y) * int64(c.remoteH) / int64(c.screen.Height))
+	}
+	c.canReturn = false
+	c.mu.Unlock()
+
+	// applyIsolation acquires c.mu itself.
+	c.applyIsolation()
 }
 
 // Stop signals the capturer to stop and waits for all goroutines to exit.
@@ -541,6 +633,10 @@ func (c *Capturer) pollCursorEdge() {
 				// Multiple packets help Windows MWB register the switch reliably
 				conn := c.conn
 				go func() {
+					// A Linux peer cannot tell injected motion from its own,
+					// so tell it the cursor now lives there. Sent ahead of the
+					// burst so the peer's recenter cannot land after it.
+					c.notifyPeer(protocol.MachineSwitched)
 					for i := 0; i < 5; i++ {
 						mouse := &protocol.Packet{
 							Type: protocol.Mouse,
@@ -829,7 +925,7 @@ func (c *Capturer) handleEvent(ev inputEvent) {
 		// Raw absolute movement cannot be forwarded. Return local control
 		// explicitly without altering the normal mouse-switching paths.
 		slog.Warn("absolute pointer forwarding is unsupported; restoring local input")
-		c.SetActive(true)
+		c.reclaimLocal()
 	case evRel:
 		c.handleRel(ev)
 	case evKey:
@@ -935,6 +1031,7 @@ func (c *Capturer) handleRel(ev inputEvent) {
 		if onActivated != nil {
 			onActivated()
 		}
+		c.notifyPeer(protocol.HideMouse)
 		c.mu.Lock()
 		return
 	}
@@ -958,7 +1055,7 @@ func (c *Capturer) handleKey(ev inputEvent) {
 	if ev.Code == 106 && ev.Value == 1 && c.hotkeyCtrl && c.hotkeyAlt {
 		if !c.IsActive() {
 			slog.Info("hotkey Ctrl+Alt+Right: returning to Ubuntu")
-			c.SetActive(true)
+			c.reclaimLocal()
 			return
 		}
 	}

@@ -3,8 +3,10 @@ package network
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"time"
 
 	"github.com/lucky-verma/mwb-linux/internal/protocol"
@@ -41,11 +43,18 @@ func ReceiveLoop(conn *Conn, handler *Handler) error {
 	defer close(stop)
 
 	for {
+		if conn.idleTimeout > 0 {
+			_ = conn.raw.SetReadDeadline(time.Now().Add(conn.idleTimeout))
+		}
 		pkt, err := conn.RecvPacket()
 		if err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				slog.Info("connection closed by remote")
 				return nil
+			}
+			var ne net.Error
+			if conn.idleTimeout > 0 && errors.As(err, &ne) && ne.Timeout() {
+				return fmt.Errorf("peer silent for %s; reconnecting", conn.idleTimeout)
 			}
 			return err
 		}

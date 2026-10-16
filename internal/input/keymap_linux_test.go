@@ -157,3 +157,25 @@ func TestCanonicalKeyboardLayout(t *testing.T) {
 		}
 	}
 }
+
+// Two mwb-linux peers encode keys with KeyCodeToVK and decode them with the
+// positional "us" profile. Every key the sender can encode must arrive as the
+// same physical key, or typing on one Linux machine produces the wrong key on
+// the other.
+func TestLinuxToLinuxKeysRoundTrip(t *testing.T) {
+	checked := 0
+	for code := uint16(1); code < 0x300; code++ {
+		vk, ok := KeyCodeToVK(code)
+		if !ok {
+			continue
+		}
+		back, ok := VKToKeyCodeForLayout(vk, "us")
+		if !ok || back != code {
+			t.Errorf("evdev %d -> VK 0x%X -> evdev %d (ok=%v)", code, vk, back, ok)
+		}
+		checked++
+	}
+	if checked == 0 {
+		t.Fatal("no keys checked")
+	}
+}

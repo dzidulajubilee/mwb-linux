@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  Share your keyboard, mouse, and clipboard seamlessly between Linux and Windows.
+  Share your keyboard, mouse, and clipboard seamlessly between Linux and Windows, or between two Linux machines.
 </p>
 
 <p align="center">
@@ -48,7 +48,9 @@ No extra software needed on Windows beyond PowerToys, which bundles Mouse Withou
 - **Device isolation** — When controlling Windows, your Linux cursor doesn't move
 - **Dual-mode connection** — Acts as both server and client for fast reconnection
 - **Zero config on Windows** — Works with existing PowerToys MWB setup
-- **Lightweight** — Single binary, ~5MB, no GUI dependencies
+- **Linux to Linux** — Pair two Linux machines with `peer = "linux"`; no Windows PC needed
+- **Optional settings window** — `mwb-gui` edits the config and shows live status
+- **Lightweight** — Single binary, ~5MB, no GUI dependencies (the settings window is separate)
 
 ## Demo
 
@@ -78,11 +80,27 @@ Download the versioned `.deb` for your architecture from
 [Releases](https://github.com/lucky-verma/mwb-linux/releases), then install it:
 
 ```bash
-sudo dpkg -i mwb-linux_*_amd64.deb
-
-# Add yourself to the input group
-sudo usermod -aG input $USER
+sudo apt install ./mwb-linux_*_amd64.deb
 ```
+
+`apt` (rather than `dpkg -i`) also installs the dependencies, including GTK
+for the settings window. The package does several things on install:
+
+- installs `mwb` and the `mwb-gui` settings window
+- adds the window to your app menu as **Mouse Without Borders**
+- installs the background service and the device permission rules
+- adds you to the `input` group when you install with `sudo`
+
+Log out and back in once so the group change takes effect. Then open
+Mouse Without Borders, enter the other computer and the security key, and
+click Save and Start.
+
+If you install from a graphical software store instead, add yourself to the
+`input` group by hand with `sudo usermod -aG input $USER`. The store doesn't
+say which user is installing, so the package can't do it for you.
+
+To build the same package yourself, see
+[Building the .deb package](#building-the-deb-package).
 
 ### From Binary
 
@@ -209,6 +227,75 @@ mwb -bidi -edge left
 
 In PowerToys MWB, enter the security key and device name to connect.
 
+## Linux to Linux
+
+Two Linux machines can share one keyboard and mouse with no Windows PC
+involved. Run mwb-linux on both and set `peer = "linux"` on both.
+
+1. Make a key on either machine with `mwb genkey`, and use that same key on
+   both machines.
+2. Configure each machine to point at the other one. Give the two machines
+   different names. Put `edge` on the side where the other machine sits.
+
+   ```toml
+   # On "desk" (the laptop is to its right)
+   host = "192.168.1.21"     # the laptop
+   key = "PASTE-THE-SAME-KEY-ON-BOTH"
+   name = "desk"
+   peer = "linux"
+   edge = "right"
+   bidirectional = true
+   remote_width = 1920       # the laptop's screen
+   remote_height = 1200
+   ```
+
+   ```toml
+   # On "laptop" (the desk is to its left)
+   host = "192.168.1.20"     # the desk
+   key = "PASTE-THE-SAME-KEY-ON-BOTH"
+   name = "laptop"
+   peer = "linux"
+   edge = "left"
+   bidirectional = true
+   remote_width = 2560       # the desk's screen
+   remote_height = 1440
+   ```
+
+3. Start mwb on both. With `bidirectional = true` the user service can run
+   it: `systemctl --user enable --now mwb`.
+
+Either machine's keyboard and mouse can then drive the shared cursor. Clipboard
+and file copy work in both directions. Both machines need X11 or XWayland to
+send input; see [Known Limitations](#known-limitations).
+
+Why `peer = "linux"` matters: each machine listens and dials at the same time.
+PowerToys closes the duplicate connection itself. Two mwb-linux instances have
+no such referee, so without this setting they can each keep a different
+connection and stop hearing each other. With it, both machines keep the
+connection dialed by the machine whose name sorts first. A link that goes
+quiet for 20 seconds is dropped and redialed.
+
+## Settings window
+
+`mwb-gui` is an optional desktop window for these settings. It has:
+
+- a screen arrangement you click to choose the edge
+- connection settings, with key generation
+- sharing switches
+- live connection status
+- start, stop and start-at-login for the service
+
+The [.deb package](#from-deb-package) already includes it: open
+**Mouse Without Borders** from your apps. From source:
+
+```bash
+sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-4.0
+make install-gui
+```
+
+It writes only the settings you change and keeps the rest of `config.toml`,
+including comments, as it was. See [gui/README.md](gui/README.md).
+
 ## How It Works
 
 MWB Linux implements the full Mouse Without Borders protocol:
@@ -274,6 +361,8 @@ keep the client on a trusted network segment.
 | `file_dir` | — | Deprecated and ignored. Windows files use hidden clipboard backing storage under `$XDG_CACHE_HOME/mwb/clipboard` and a native GNOME/generic file selection, then appear in a visible folder only on paste |
 | `max_file_size` | 104857600 | Per-transfer cap in bytes. The default matches MWB's own 100 MB limit; a stock Windows peer neither sends nor accepts more |
 | `legacy_crypto` | false | Use the stream encryption PowerToys used before 0.101 (fixed salt and IV, 50,000 PBKDF2 iterations). Only needed for a Windows peer pinned to an older PowerToys |
+| `peer` | windows | What runs on the other machine: `windows` (PowerToys) or `linux` (another mwb-linux). Set `linux` on both machines of a Linux pair; see [Linux to Linux](#linux-to-linux). Other values are rejected |
+| `bidirectional` | false | Send this machine's keyboard and mouse to the other one at the edge, like `-bidi`. Lets the user service run bidirectionally. An explicit `-bidi` or `-bidi=false` flag overrides it |
 | `keyboard_layout` | auto | Inbound Windows-to-Linux keyboard mapping. `auto` detects the local Linux layout when possible; supported profiles include `us`, `de`, `fr`, `be`, `es`, `it`, `gb`, `pt`, `no`/`dk`/`se`/`fi`, `ch`, and `nl` |
 
 > **Config file security:** `config.toml` stores the security key in plaintext.
@@ -292,12 +381,14 @@ keep the client on a trusted network segment.
 | `mwb update --check` | Report whether an update exists, without installing |
 | `mwb update --force` | Reinstall the latest release even if already current |
 | `mwb update --restart` | Install and restart an active `mwb.service` |
+| `mwb genkey` | Print a new random 24-character security key |
+| `mwb-gui` | Open the settings window (optional; `make install-gui`) |
 
 ### CLI Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-bidi` | false | Enable bidirectional input (Linux → Windows) |
+| `-bidi` | *(from config)* | Enable bidirectional input (Linux → Windows). Overrides `bidirectional` in config |
 | `-edge` | *(from config)* | Override edge from config: `left` or `right` |
 | `-no-clipboard` | false | Disable clipboard sharing (overrides config) |
 | `-debug` | false | Enable debug logging |
@@ -370,10 +461,12 @@ cmd/mwb/              CLI entry point
 internal/
   capture/            Edge detection, evdev capture, EVIOCGRAB device isolation
   clipboard/          Bidirectional clipboard sync (text + images)
-  config/             TOML configuration
+  config/             TOML configuration and key generation
   input/              Virtual mouse/keyboard via uinput
   network/            TCP connection, encryption, packet send/receive
   protocol/           MWB packet types, serialization, AES-256-CBC
+  status/             Connection status file read by mwb-gui
+gui/                  mwb-gui settings window (Python, GTK 4)
 docs/
   README.md           Documentation index
   architecture.md     Runtime design and contributor invariants
@@ -400,6 +493,17 @@ scripts/
   likewise never grabbed, which keeps the physical power button available as a
   last-resort recovery path.
 - **Cursor speed / drift** — Remote cursor movement scales raw evdev deltas by `accel_multiplier` (default 2×); lower it if the Windows cursor feels too fast (the Windows side adds no acceleration of its own). Tracking is open-loop, so the virtual cursor may still drift from the actual position over long sessions.
+- **Linux pairs share one cursor** — With `peer = "linux"` and both machines
+  bidirectional, whichever machine does not currently own the cursor forwards
+  its own keyboard and mouse to the machine that does. Its estimate of where
+  the cursor sits is open-loop, as above. If you use both machines' mice
+  while the cursor is on one of them, it can switch at a slightly different
+  spot than you expect. Crossing the screen edge on the machine that owns the
+  cursor is always exact.
+- **Linux pairs need different names** — The connection rule compares the two
+  machines' `name` values. If they match, mwb warns and falls back to
+  first-wins, which can occasionally leave the two machines on different
+  connections until the 20s silence timeout redials.
 
 ## Contributing
 
@@ -413,6 +517,120 @@ make test     # Run tests
 make lint     # Run linter
 make check    # All of the above
 ```
+
+#### Build prerequisites
+
+```bash
+# Go 1.25 or newer (see go.mod). If apt gives you an older Go, `go` downloads
+# the right toolchain on first build, as long as you're online.
+sudo apt install golang-go make git
+
+# Runtime tools mwb uses
+sudo apt install xdotool xclip x11-xserver-utils
+
+# Only for the settings window and its tests
+sudo apt install python3 python3-gi python3-gi-cairo gir1.2-gtk-4.0
+```
+
+`make lint` also needs [golangci-lint](https://golangci-lint.run/), and
+`make deb` needs [GoReleaser](https://goreleaser.com/) (see below).
+
+#### All make targets
+
+| Command | What it does |
+|---------|--------------|
+| `make build` | Build `./mwb` |
+| `make test` | Run the Go tests |
+| `make test-gui` | Run the settings window tests (no GTK needed) |
+| `make lint` | Run golangci-lint |
+| `make check` | Format, lint and test |
+| `make install` | Install `mwb` and the user service for your user (no sudo) |
+| `make install-gui` | Install `mwb-gui` and its menu entry for your user (no sudo) |
+| `make uninstall` / `make uninstall-gui` | Remove what the matching install target added |
+| `make deb` | Build the `.deb` packages into `dist/` |
+
+### Building the .deb package
+
+The `.deb` is defined in [`.goreleaser.yaml`](.goreleaser.yaml) (the `nfpms`
+section). GoReleaser builds it, both in CI and on your machine, so a local
+build matches a release exactly. Each build makes both architectures:
+`amd64` for most PCs and `arm64` for ARM boards such as a Raspberry Pi.
+
+**1. Install GoReleaser** (once). Pick one:
+
+```bash
+go install github.com/goreleaser/goreleaser/v2@latest   # puts it in ~/go/bin
+sudo snap install --classic goreleaser
+```
+
+If you used `go install`, make sure `~/go/bin` is on your `PATH`.
+
+**2. Build a test package.**
+
+```bash
+make deb
+```
+
+The packages appear in `dist/`, named like
+`mwb-linux_0.6.3-SNAPSHOT-a2d71fd_amd64.deb`. Nothing is published or uploaded.
+The build first runs `go mod tidy`, which needs internet access.
+
+A snapshot build is numbered **below** the release it starts from
+(`0.6.3~SNAPSHOT…` sorts before `0.6.3`). That's fine on a test machine.
+On a machine that already has the official 0.6.3 installed, though, `apt`
+treats installing it as a downgrade and asks you to confirm. To make a
+package that upgrades cleanly, build a numbered pre-release instead.
+
+**3. Build a numbered pre-release** (optional). Commit your changes first:
+GoReleaser refuses to build from a tree with uncommitted changes. Then:
+
+```bash
+git tag v0.6.4-rc.1
+goreleaser release --clean --skip=publish,announce,sign
+git tag -d v0.6.4-rc.1        # remove the local tag so it is never pushed
+```
+
+This gives `dist/mwb-linux_0.6.4-rc.1_amd64.deb`, version `0.6.4~rc.1`. That
+is newer than 0.6.3, and older than a final 0.6.4, so the real release still
+replaces it.
+
+**4. Check what's inside**, before installing:
+
+```bash
+dpkg-deb -I dist/mwb-linux_*_amd64.deb    # version, Depends, Recommends
+dpkg-deb -c dist/mwb-linux_*_amd64.deb    # every file it installs
+```
+
+You should see `mwb` and `mwb-gui` in `/usr/local/bin` and the settings
+window in `/usr/local/share/mwb-gui`. You should also see the menu entry,
+the user service and the two udev rules.
+
+**5. Install and test it.**
+
+```bash
+sudo apt install ./dist/mwb-linux_*_amd64.deb   # apt also installs the dependencies
+mwb version
+sudo apt remove mwb-linux                       # removes every file it installed
+```
+
+Your `~/.config/mwb/config.toml` is never touched by installing, upgrading
+or removing the package.
+
+#### What the package does on install
+
+- **Files:** installs `mwb` and `mwb-gui`, the app-menu entry, the
+  `mwb.service` user service, and the udev rules for `/dev/uinput`.
+- **Kernel module:** loads `uinput` now, and at every boot.
+- **Group:** adds the user who ran `sudo` to the `input` group, creating the
+  group if the system lacks it. Installs from a graphical store can't know
+  the user, so they print the manual command instead.
+- **Old service:** removes a legacy root `mwb-linux.service`, if present.
+- **Service start:** never starts or enables the service by itself. You do
+  that from the settings window, or with `systemctl --user enable --now mwb`.
+
+To change what the package contains, edit the `nfpms` section of
+`.goreleaser.yaml`, and `packaging/postinstall.sh` for install-time steps.
+Then rebuild with `make deb` and check the contents again as in step 4.
 
 ## Acknowledgments
 
