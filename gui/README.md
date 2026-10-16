@@ -27,6 +27,13 @@ Use `mwb-gui --config PATH` to edit a different file.
   it starts at login, and read the recent log.
 - **Live status.** Read from `$XDG_RUNTIME_DIR/mwb/status.json`, which the
   client writes.
+- **Tray icon.** Closing the window leaves an icon in the tray: click it to
+  open the window, right-click for the connection state, Start/Stop sharing
+  and Quit (which also stops the service). `mwb-gui --background` starts with
+  just the icon; the autostart entry
+  `io.github.lucky_verma.MwbLinux.Tray.desktop` runs it at login. The icon is
+  a StatusNotifierItem published with Gio, since GTK 4 has no tray API; with
+  no tray host on the desktop, closing the window quits.
 
 ## How it treats your config
 

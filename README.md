@@ -310,6 +310,12 @@ mwb-linux addition and is never sent to PowerToys.
 - sharing switches
 - live connection status
 - start, stop and start-at-login for the service
+- a tray icon: closing the window leaves it in the tray. Click the icon to
+  open the window again; right-click it for the connection state, start or
+  stop sharing, and **Quit**, which also stops mwb. It appears at login once
+  mwb is set up. GNOME needs the AppIndicator extension for tray icons
+  (Ubuntu and Zorin enable it by default); without one, closing the window
+  quits as before.
 
 The [.deb package](#from-deb-package) already includes it: open
 **Mouse Without Borders** from your apps. From source:

@@ -24,6 +24,7 @@ from gi.repository import Gdk, Gio, GLib, Gtk, Pango, PangoCairo  # noqa: E402
 from . import __version__  # noqa: E402
 from . import config_file as cf  # noqa: E402
 from . import service  # noqa: E402
+from . import tray  # noqa: E402
 
 APP_ID = "io.github.lucky_verma.MwbLinux"
 
@@ -849,16 +850,70 @@ class MainWindow(Gtk.ApplicationWindow):
 
 
 class MwbApp(Gtk.Application):
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, background: bool = False):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS
                          if hasattr(Gio.ApplicationFlags, "DEFAULT_FLAGS") else Gio.ApplicationFlags.FLAGS_NONE)
         self.config_path = config_path
+        self.background = background  # started at login: only the tray icon
+        self.tray = None
+
+    def do_startup(self):
+        Gtk.Application.do_startup(self)
+        if not tray.available():
+            return  # no tray host: closing the window quits, as before
+        try:
+            self.tray = tray.TrayIcon(self._tray_open, self._tray_toggle, self._tray_quit)
+        except GLib.Error as exc:
+            print(f"mwb-gui: no tray icon: {exc.message}", file=sys.stderr)
+            return
+        # The icon keeps the app alive with its window closed.
+        self.hold()
+        self._tray_poll()
+        GLib.timeout_add_seconds(STATUS_POLL_SECONDS, self._tray_poll)
 
     def do_activate(self):
+        if self.background:
+            self.background = False  # later activations, from the icon or the launcher, open the window
+            if self.tray is not None:
+                return
         win = self.get_active_window()
         if win is None:
             win = MainWindow(self, self.config_path)
         win.present()
+
+    def do_shutdown(self):
+        if self.tray is not None:
+            self.tray.close()
+            self.tray = None
+        Gtk.Application.do_shutdown(self)
+
+    # --- tray -------------------------------------------------------------
+
+    def _tray_poll(self):
+        if self.tray is None:
+            return False
+        self.tray.update(*tray.tray_status(service.read_status()))
+        return True
+
+    def _tray_open(self):
+        self.activate()
+
+    def _tray_toggle(self, start: bool):
+        def work():
+            service.control("start" if start else "stop")
+            GLib.idle_add(self._tray_poll)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _tray_quit(self):
+        # Quit means everything: stop sharing too, not just hide the icon.
+        def work():
+            service.control("stop")
+            GLib.idle_add(self.quit)
+
+        for win in self.get_windows():
+            win.close()
+        threading.Thread(target=work, daemon=True).start()
 
 
 def main(argv=None) -> int:
@@ -867,11 +922,16 @@ def main(argv=None) -> int:
     if "--version" in argv:
         print("mwb-gui", __version__)
         return 0
+    background = "--background" in argv
+    if background:
+        argv.remove("--background")
     if "--config" in argv:
         i = argv.index("--config")
         if i + 1 >= len(argv):
-            print("usage: mwb-gui [--config PATH]", file=sys.stderr)
+            print("usage: mwb-gui [--config PATH] [--background]", file=sys.stderr)
             return 2
         config_path = os.path.abspath(os.path.expanduser(argv[i + 1]))
         del argv[i : i + 2]
-    return MwbApp(config_path).run(argv[:1])
+    if background and not os.path.exists(config_path):
+        return 0  # started at login, but mwb was never set up: no icon
+    return MwbApp(config_path, background).run(argv[:1])

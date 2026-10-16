@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `mwb-gui` tray icon. Closing the window keeps it in the tray; clicking the
+  icon opens the window again, and its right-click menu shows the connection
+  state, starts or stops sharing, and quits, which also stops mwb. It starts
+  at login (`mwb-gui --background`) once mwb is set up. Uses the
+  StatusNotifierItem protocol over D-Bus, so it needs no extra packages.
+
 ### Changed (Linux pairs only)
 - `bidirectional` now defaults to on for `peer = "linux"`, because two
   receive-only machines connect but never move the cursor. An explicit `false`
