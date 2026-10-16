@@ -54,7 +54,25 @@ type Config struct {
 	// absolute-mirror direction). 1.0 mirrors Windows 1:1; raise it for a faster
 	// local cursor when Windows is in control. <= 0 means unset (defaults to 1).
 	InboundMultiplier float64 `toml:"inbound_multiplier"`
+
+	// Peer names what runs on the other machine. "windows" (the default) is
+	// PowerToys Mouse Without Borders and keeps the original behavior exactly.
+	// "linux" is another mwb-linux instance: it enables deterministic
+	// connection pairing and explicit cursor-ownership packets, which PowerToys
+	// otherwise provides itself. Only set it when both ends run mwb-linux.
+	Peer string `toml:"peer"`
+
+	// Bidirectional sends local input to the peer when the cursor crosses the
+	// configured edge, like the -bidi flag. nil = off, so the installed service
+	// stays receive-only unless asked. An explicit -bidi flag overrides it.
+	Bidirectional *bool `toml:"bidirectional"`
 }
+
+// Peer types accepted by the peer setting.
+const (
+	PeerWindows = "windows"
+	PeerLinux   = "linux"
+)
 
 func Load(path string) (*Config, error) {
 	var cfg Config
@@ -97,6 +115,14 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Edge == "" {
 		cfg.Edge = "left"
+	}
+	switch cfg.Peer {
+	case "":
+		cfg.Peer = PeerWindows
+	case PeerWindows, PeerLinux:
+	default:
+		// Fail closed: a typo must not silently pick a pairing strategy.
+		return nil, fmt.Errorf("config: peer must be %q or %q, got %q", PeerWindows, PeerLinux, cfg.Peer)
 	}
 
 	// The config holds the plaintext security key — the only secret protecting
@@ -162,6 +188,18 @@ func (c *Config) FileTransferEnabled() bool {
 // stock, up-to-date Windows peer speaks.
 func (c *Config) LegacyCryptoEnabled() bool {
 	return c.LegacyCrypto != nil && *c.LegacyCrypto
+}
+
+// LinuxPeer reports whether the other machine runs mwb-linux rather than
+// PowerToys.
+func (c *Config) LinuxPeer() bool {
+	return c.Peer == PeerLinux
+}
+
+// BidirectionalEnabled reports whether config asks for bidirectional input.
+// An absent setting means receive-only, preserving the prior default.
+func (c *Config) BidirectionalEnabled() bool {
+	return c.Bidirectional != nil && *c.Bidirectional
 }
 
 // FileDirectory resolves the legacy direct-download directory.

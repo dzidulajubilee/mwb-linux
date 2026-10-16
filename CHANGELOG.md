@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Linux-to-Linux pairing: set `peer = "linux"` on two mwb-linux machines to
+  share one keyboard and mouse with no Windows PC. Both machines keep the same
+  connection, a link silent for 20s is redialed, and each machine tells the
+  other when it takes or hands back the cursor (`MachineSwitched` and
+  `HideMouse`). The default `peer = "windows"` behaves exactly as before.
+- `bidirectional` config setting, so the user service can run bidirectionally.
+  An explicit `-bidi` / `-bidi=false` flag still wins.
+- `mwb genkey` prints a random 24-character security key.
+- Connection status file at `$XDG_RUNTIME_DIR/mwb/status.json` (owner-only,
+  no secrets).
+- `mwb-gui`, an optional GTK 4 settings and status window (`make install-gui`).
+  It edits only the settings you change and keeps the rest of `config.toml`.
+- The `.deb` now includes `mwb-gui` and an app-menu entry, recommends its GTK
+  packages, and adds the installing `sudo` user to the `input` group (as
+  `scripts/install.sh` already did). `make deb` builds it locally.
+
 ## [0.6.3] - 2026-09-15
 
 ### Compatibility

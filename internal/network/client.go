@@ -34,6 +34,17 @@ type Conn struct {
 	RemoteName string
 	nextID     atomic.Int32
 	sendMu     sync.Mutex // guards enc.Write — CBC mode is not goroutine-safe
+
+	// idleTimeout, when non-zero, makes ReceiveLoop give up on a connection
+	// that has delivered nothing for that long. Zero (the default, and always
+	// the case for a PowerToys peer) keeps reads unbounded as before.
+	idleTimeout time.Duration
+}
+
+// SetIdleTimeout bounds how long ReceiveLoop waits for the next packet. Call it
+// before ReceiveLoop starts; zero disables the bound.
+func (c *Conn) SetIdleTimeout(d time.Duration) {
+	c.idleTimeout = d
 }
 
 // Cached key material — PBKDF2 is expensive (50k iterations), only derive once.

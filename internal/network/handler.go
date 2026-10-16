@@ -50,6 +50,10 @@ type Handler struct {
 	// Windows 1:1 (the default). Inbound is absolute, so this applies a constant
 	// gain to per-packet deltas rather than a true acceleration curve.
 	InboundMultiplier float64
+	// OnHideMouse optionally runs when the peer says the cursor has left this
+	// machine. Only wired for a Linux peer, which sends HideMouse when it takes
+	// the cursor back; nil keeps the original log-only handling.
+	OnHideMouse func()
 	// KeyboardLayout selects the inbound Windows VK -> Linux evdev mapping.
 	KeyboardLayout  string
 	pendingCtrl     bool
@@ -90,6 +94,9 @@ func (h *Handler) HandlePacket(pkt *protocol.Packet) {
 		}
 	case protocol.HideMouse:
 		slog.Debug("HideMouse received — cursor leaving us", "src", pkt.Src)
+		if h.OnHideMouse != nil {
+			h.OnHideMouse()
+		}
 	case protocol.NextMachine:
 		if h.ShouldReclaim != nil && !h.ShouldReclaim(pkt.Mouse.X, pkt.Mouse.Y, pkt.Mouse.WheelDelta) {
 			slog.Debug("NextMachine ignored — requested landing point is not on our shared edge",

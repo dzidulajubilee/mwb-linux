@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/lucky-verma/mwb-linux/internal/protocol"
 )
 
 type blockingPointer struct {
@@ -377,5 +379,128 @@ func TestReturnKeepsHeightAndRecentersBeforeRelease(t *testing.T) {
 	c.SetActive(true)
 	if pointer.x != entryClearance || pointer.y != 360 || grabbed() != 0 || c.canSwitch {
 		t.Fatalf("incorrect return: position=%d,%d grabbed=%d canSwitch=%v", pointer.x, pointer.y, grabbed(), c.canSwitch)
+	}
+}
+
+type sentPackets struct {
+	mu    sync.Mutex
+	types []protocol.PackageType
+}
+
+func (s *sentPackets) send(p *protocol.Packet) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.types = append(s.types, p.Type)
+	return nil
+}
+
+func (s *sentPackets) count(t protocol.PackageType) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, got := range s.types {
+		if got == t {
+			n++
+		}
+	}
+	return n
+}
+
+// The PowerToys path must send exactly what it always has: no ownership packets.
+func TestNotifyPeerIsSilentForWindowsPeer(t *testing.T) {
+	c := New(nil, ScreenInfo{Width: 1920, Height: 1080}, "left")
+	sent := &sentPackets{}
+	c.sendFn = sent.send
+	c.notifyPeer(protocol.MachineSwitched)
+	c.notifyPeer(protocol.HideMouse)
+	if len(sent.types) != 0 {
+		t.Fatalf("sent %v to a Windows peer", sent.types)
+	}
+}
+
+func TestVirtualEdgeReturnTellsLinuxPeer(t *testing.T) {
+	c, grabbed := newFakeIsolated(t, 1)
+	c.screen = ScreenInfo{Width: 1920, Height: 1080}
+	c.edgeSide, c.remoteW, c.remoteH = "left", 1920, 1080
+	c.accelMult = 1
+	sent := &sentPackets{}
+	c.sendFn = sent.send
+	c.SetLinuxPeer(true)
+	c.applyIsolation()
+
+	// Cursor is on the peer near its right edge (the shared one for "left").
+	c.remoteX, c.remoteY, c.canReturn = 1919, 540, true
+	c.handleRel(inputEvent{Type: evRel, Code: relX, Value: 5})
+
+	if !c.IsActive() || grabbed() != 0 {
+		t.Fatal("virtual edge return did not restore local input")
+	}
+	if sent.count(protocol.HideMouse) != 1 {
+		t.Fatalf("sent %v, want one HideMouse", sent.types)
+	}
+}
+
+func TestHotkeyReturnTellsLinuxPeer(t *testing.T) {
+	c, _ := newFakeIsolated(t, 1)
+	c.screen = ScreenInfo{Width: 1920, Height: 1080}
+	c.edgeSide, c.remoteW, c.remoteH = "right", 1920, 1080
+	sent := &sentPackets{}
+	c.sendFn = sent.send
+	c.SetLinuxPeer(true)
+	c.applyIsolation() // inactive: cursor is on the peer
+
+	// Ctrl and Alt held. Pressing them through handleKey would forward them
+	// to the peer over the (absent) connection, so set the tracked state.
+	c.hotkeyCtrl, c.hotkeyAlt = true, true
+	c.handleKey(inputEvent{Type: evKey, Code: 106, Value: 1}) // Right
+	if !c.IsActive() || sent.count(protocol.HideMouse) != 1 {
+		t.Fatalf("active=%v sent=%v; want local control and one HideMouse", c.IsActive(), sent.types)
+	}
+	// Already local: a second hotkey press must not repeat the notification.
+	c.handleKey(inputEvent{Type: evKey, Code: 106, Value: 1})
+	if sent.count(protocol.HideMouse) != 1 {
+		t.Fatalf("sent %v, want exactly one HideMouse", sent.types)
+	}
+}
+
+func TestYieldToPeerIsolatesAndForwards(t *testing.T) {
+	c, grabbed := newFakeIsolated(t, 2)
+	c.active = true
+	c.screen = ScreenInfo{Width: 2560, Height: 1440}
+	c.edgeSide, c.remoteW, c.remoteH = "right", 1920, 1080
+	c.pointer = &recordingPointer{x: 2000, y: 720}
+
+	c.YieldToPeer()
+
+	if c.IsActive() {
+		t.Fatal("still active after the peer took the cursor")
+	}
+	if grabbed() != 2 {
+		t.Fatalf("grabbed %d of 2 devices; local input would leak", grabbed())
+	}
+	wantX, _ := c.remoteEntryLocked()
+	if c.remoteX != wantX || c.remoteY != 540 || c.canReturn {
+		t.Fatalf("virtual cursor at %d,%d canReturn=%v; want landing %d,540 with return gated",
+			c.remoteX, c.remoteY, c.canReturn, wantX)
+	}
+	// A second HideMouse while already remote is a no-op.
+	c.YieldToPeer()
+	if grabbed() != 2 || c.IsActive() {
+		t.Fatal("repeated yield changed state")
+	}
+}
+
+// After Stop the capturer must never re-grab devices.
+func TestYieldToPeerAfterStopDoesNothing(t *testing.T) {
+	c, grabbed := newFakeIsolated(t, 1)
+	c.active = true
+	c.screen = ScreenInfo{Width: 1920, Height: 1080}
+	c.remoteW, c.remoteH = 1920, 1080
+	c.mu.Lock()
+	c.stopped = true
+	c.mu.Unlock()
+	c.YieldToPeer()
+	if !c.IsActive() || grabbed() != 0 {
+		t.Fatal("yield after Stop changed state")
 	}
 }

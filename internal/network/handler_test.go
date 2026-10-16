@@ -385,3 +385,18 @@ func TestHandleMiddleButton(t *testing.T) {
 		t.Errorf("expected BTN_MIDDLE down, got %v", mock.ButtonDowns)
 	}
 }
+
+func TestHideMouseRunsHookWhenSet(t *testing.T) {
+	called := 0
+	h := &Handler{OnHideMouse: func() { called++ }}
+	h.HandlePacket(&protocol.Packet{Type: protocol.HideMouse})
+	if called != 1 {
+		t.Fatalf("OnHideMouse called %d times, want 1", called)
+	}
+}
+
+// A PowerToys peer also sends HideMouse; without a hook it stays log-only.
+func TestHideMouseWithoutHookIsHarmless(t *testing.T) {
+	h := &Handler{}
+	h.HandlePacket(&protocol.Packet{Type: protocol.HideMouse})
+}
