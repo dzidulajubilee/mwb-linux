@@ -110,9 +110,10 @@ type Capturer struct {
 
 // trackedDevice is one open /dev/input/event* node.
 type trackedDevice struct {
-	file    *os.File
-	grab    bool // keyboard or pointer: suppress it while the cursor is remote
-	grabbed bool // whether the exclusive grab is currently held
+	file     *os.File
+	grab     bool // keyboard or pointer: suppress it while the cursor is remote
+	grabbed  bool // whether the exclusive grab is currently held
+	touchpad *touchpad
 }
 
 // New creates a new input capturer.
@@ -454,14 +455,17 @@ func (c *Capturer) Run() error {
 		c.addDevice(d)
 	}
 	c.mu.Lock()
-	targets := 0
+	targets, touchpads := 0, 0
 	for _, d := range c.devices {
 		if d.grab {
 			targets++
 		}
+		if d.touchpad != nil {
+			touchpads++
+		}
 	}
 	c.mu.Unlock()
-	slog.Info("classified input devices", "tracked", len(devices), "keyboards_and_pointers", targets)
+	slog.Info("classified input devices", "tracked", len(devices), "keyboards_and_pointers", targets, "touchpads", touchpads)
 	return nil
 }
 
@@ -488,6 +492,10 @@ func (c *Capturer) addDevice(path string) {
 		return
 	}
 	grabbable := isGrabTarget(f)
+	var tp *touchpad
+	if grabbable {
+		tp = touchpadFor(f)
+	}
 
 	c.mu.Lock()
 	// Re-check under the lock: Stop() may have run, and a concurrent refresh
@@ -505,7 +513,7 @@ func (c *Capturer) addDevice(path string) {
 	if c.devices == nil {
 		c.devices = make(map[string]*trackedDevice)
 	}
-	c.devices[path] = &trackedDevice{file: f, grab: grabbable}
+	c.devices[path] = &trackedDevice{file: f, grab: grabbable, touchpad: tp}
 	// wg.Add must happen under the same lock that guards c.stopped, otherwise
 	// it can race an in-progress wg.Wait() in Stop().
 	c.wg.Add(1)
@@ -949,6 +957,12 @@ func (c *Capturer) monitorDevice(f *os.File) {
 	defer f.Close() //nolint:errcheck
 	slog.Debug("monitoring device", "path", f.Name())
 	buf := make([]byte, inputEventSize*32)
+	c.mu.Lock()
+	var tp *touchpad
+	if d := c.devices[f.Name()]; d != nil {
+		tp = d.touchpad
+	}
+	c.mu.Unlock()
 	for {
 		select {
 		case <-c.stopCh:
@@ -963,6 +977,10 @@ func (c *Capturer) monitorDevice(f *os.File) {
 
 		for off := 0; off+inputEventSize <= n; off += inputEventSize {
 			ev := parseEvent(buf[off : off+inputEventSize])
+			if tp != nil {
+				tp.handle(ev, touchpadSink{c})
+				continue
+			}
 			if ev.Type == uint16(evAbsType) {
 				c.mu.Lock()
 				d := c.devices[f.Name()]
@@ -1036,27 +1054,20 @@ func (c *Capturer) handleRel(ev inputEvent) {
 
 	switch ev.Code {
 	case relX:
-		c.remoteX += applyAcceleration(ev.Value, c.accelMult)
-		if c.remoteX < 0 {
-			c.remoteX = 0
-		}
-		if c.remoteX > c.remoteW {
-			c.remoteX = c.remoteW
-		}
+		c.moveRemoteLocked(applyAcceleration(ev.Value, c.accelMult), 0)
 	case relY:
-		c.remoteY += applyAcceleration(ev.Value, c.accelMult)
-		if c.remoteY < 0 {
-			c.remoteY = 0
-		}
-		if c.remoteY > c.remoteH {
-			c.remoteY = c.remoteH
-		}
+		c.moveRemoteLocked(0, applyAcceleration(ev.Value, c.accelMult))
 	case relWheel:
 		c.sendMouseLocked(0, 0, ev.Value*120, protocol.WM_MOUSEWHEEL)
-		return
-	default:
-		return
 	}
+}
+
+// moveRemoteLocked moves the virtual remote cursor by (dx, dy) pixels, returns
+// control when it reaches the return edge, and otherwise forwards the new
+// position. c.mu must be held; it is released and re-acquired on return.
+func (c *Capturer) moveRemoteLocked(dx, dy int32) {
+	c.remoteX = max(0, min(c.remoteW, c.remoteX+dx))
+	c.remoteY = max(0, min(c.remoteH, c.remoteY+dy))
 
 	// Like the local edge gate, require deliberate inward movement before return.
 	// This prevents jitter/momentum from the initial switch from bouncing back.
@@ -1220,34 +1231,35 @@ func (c *Capturer) handleKey(ev inputEvent) {
 }
 
 func (c *Capturer) sendMouse(x, y, wheelDelta, flags int32) {
-	pkt := &protocol.Packet{
-		Type: protocol.Mouse,
-		Src:  c.conn.MachineID,
-		Des:  c.conn.RemoteID,
-	}
-	pkt.Mouse.X = x
-	pkt.Mouse.Y = y
-	pkt.Mouse.WheelDelta = wheelDelta
-	pkt.Mouse.DwFlags = flags
-
-	if err := c.conn.SendPacket(pkt); err != nil {
-		slog.Debug("send mouse failed", "err", err)
-	}
+	c.mu.Lock()
+	conn, send := c.conn, c.sendFn
+	c.mu.Unlock()
+	deliverMouse(conn, send, x, y, wheelDelta, flags)
 }
 
 // sendMouseLocked sends a mouse packet (caller must hold c.mu).
 func (c *Capturer) sendMouseLocked(x, y, wheelDelta, flags int32) {
-	pkt := &protocol.Packet{
-		Type: protocol.Mouse,
-		Src:  c.conn.MachineID,
-		Des:  c.conn.RemoteID,
+	deliverMouse(c.conn, c.sendFn, x, y, wheelDelta, flags)
+}
+
+// deliverMouse sends one mouse packet through send, or conn when send is nil.
+func deliverMouse(conn *network.Conn, send func(*protocol.Packet) error, x, y, wheelDelta, flags int32) {
+	pkt := &protocol.Packet{Type: protocol.Mouse}
+	if conn != nil {
+		pkt.Src, pkt.Des = conn.MachineID, conn.RemoteID
 	}
 	pkt.Mouse.X = x
 	pkt.Mouse.Y = y
 	pkt.Mouse.WheelDelta = wheelDelta
 	pkt.Mouse.DwFlags = flags
 
-	if err := c.conn.SendPacket(pkt); err != nil {
+	if send == nil {
+		if conn == nil {
+			return
+		}
+		send = conn.SendPacket
+	}
+	if err := send(pkt); err != nil {
 		slog.Debug("send mouse failed", "err", err)
 	}
 }

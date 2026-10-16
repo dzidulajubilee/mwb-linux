@@ -421,9 +421,11 @@ keep the client on a trusted network segment.
 - Security key shared with Linux client
 - Windows Firewall must allow ports **15100-15101** (TCP inbound/outbound)
 
-Absolute touchpad/tablet motion is not forwarded by the raw evdev capture
-backend. If such a device is used while input is grabbed, mwb restores local
-control and logs a warning. Use a relative mouse for Linux-to-Windows control.
+Touchpads work while the cursor is on the other computer: one finger moves,
+a tap clicks (two fingers right-click, three middle-click), two fingers
+scroll (following the fingers, like GNOME's default), and pressing the pad
+with two fingers right-clicks. Touchscreens and pen tablets are not
+forwarded; touching one brings the cursor back to this computer.
 
 ## Troubleshooting
 
