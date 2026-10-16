@@ -77,6 +77,8 @@ type Capturer struct {
 	setGrabFn     func(*os.File, bool) error // test seam; nil uses the real ioctl
 	findDevicesFn func() ([]string, error)   // test seam; nil scans /dev/input
 	pointer       pointerPositioner          // one persistent X11 connection for edge polling
+	edge          edgeSource                 // Wayland: edge window that reports touches; nil polls pointer
+	inward        int32                      // Wayland: raw inward motion since the edge was disarmed
 	stopCh        chan struct{}
 	wg            sync.WaitGroup            // tracks all goroutines for clean Stop()
 	devices       map[string]*trackedDevice // open /dev/input/event* fds, keyed by path
@@ -144,6 +146,7 @@ func (c *Capturer) SetActive(active bool) {
 		c.switchSent = time.Time{}
 		c.lastActivated = time.Now()
 		c.canSwitch = false // must move away from local edge before next outbound switch
+		c.inward = 0
 		c.canReturn = false // must move away from remote edge before next return switch
 	}
 	c.mu.Unlock()
@@ -401,6 +404,9 @@ func (c *Capturer) Stop() {
 	if c.pointer != nil {
 		c.pointer.Close()
 	}
+	if c.edge != nil {
+		c.edge.Close()
+	}
 	c.wg.Wait()
 }
 
@@ -419,6 +425,22 @@ func (c *Capturer) Run() error {
 		c.pointer, err = newX11Pointer(getDisplay())
 		if err != nil {
 			return fmt.Errorf("connect to X11 for cursor position: %w", err)
+		}
+	}
+	if c.edge == nil && isWaylandSession() {
+		strip, err := newEdgeStrip(getDisplay(), c.edgeSide)
+		if err != nil {
+			slog.Warn("Wayland session: could not create the edge window; the cursor may not cross to the remote", "err", err)
+		} else {
+			// The strip reports a touch as soon as it maps if the cursor is
+			// already on the edge, as it is after a reconnect while the
+			// cursor was remote. Arm only after the mouse moves inward.
+			c.mu.Lock()
+			c.canSwitch = false
+			c.inward = 0
+			c.mu.Unlock()
+			c.edge = strip
+			slog.Info("Wayland session: detecting the screen edge with an XWayland edge window", "edge", c.edgeSide)
 		}
 	}
 	slog.Info("found input devices", "count", len(devices))
@@ -543,23 +565,50 @@ func (c *Capturer) refreshDevices() {
 }
 
 // pollCursorEdge checks the actual cursor position and triggers switches.
+// On Wayland the polled position is frozen, so edge touches come from the
+// edge window instead and re-arming comes from evdev motion (trackInward).
 func (c *Capturer) pollCursorEdge() {
 	slog.Info("edge polling started", "edge", c.edgeSide, "screenWidth", c.screen.Width)
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 
+	var hits <-chan int32
+	if c.edge != nil {
+		hits = c.edge.Hits()
+	}
+	ticks := 0
 	errCount := 0
 	for {
 		select {
 		case <-c.stopCh:
 			return
-		case <-ticker.C:
-			if !c.IsActive() {
+		case y, ok := <-hits:
+			if !ok {
+				hits = nil
 				continue
 			}
 			c.mu.Lock()
-			// canSwitch gate handles loop prevention — no time-based cooldown needed
+			armed := c.active && c.canSwitch
 			c.mu.Unlock()
+			if armed {
+				x := int32(0)
+				if c.edgeSide == "right" {
+					x = c.screen.Width - 1
+				}
+				c.switchToRemote(x, y)
+			}
+		case <-ticker.C:
+			if c.edge != nil {
+				// Re-raise about once a second so newly mapped windows
+				// cannot cover the strip.
+				if ticks++; ticks%100 == 0 {
+					c.edge.Raise()
+				}
+				continue
+			}
+			if !c.IsActive() {
+				continue
+			}
 			x, y, err := c.pointer.Position()
 			if err != nil {
 				errCount++
@@ -604,55 +653,85 @@ func (c *Capturer) pollCursorEdge() {
 			}
 
 			if switched {
-				now := time.Now()
-				if now.Sub(c.lastSwitch) < 100*time.Millisecond {
-					continue
-				}
-				c.lastSwitch = now
-
-				slog.Info("screen edge hit, switching to remote", "edge", c.edgeSide, "x", x, "y", y)
-
-				// Map local Y to remote entry point (proportional)
-				entryY := int32(float64(y) / float64(c.screen.Height) * 65535)
-
-				c.mu.Lock()
-				c.active = false
-				c.switchSent = time.Now()
-				c.edgeY = y
-				// Use the same pixel position for the initial burst and motion.
-				pixelX, entryX := c.remoteEntryLocked()
-				c.remoteX = pixelX
-				c.remoteY = int32(float64(y) / float64(c.screen.Height) * float64(c.remoteH))
-				c.canReturn = false // must move away from return edge first
-				c.mu.Unlock()
-
-				// Suppress local input (synchronous — one ioctl per device)
-				c.applyIsolation()
-
-				// Send mouse burst to the entry position on remote
-				// Multiple packets help Windows MWB register the switch reliably
-				conn := c.conn
-				go func() {
-					// A Linux peer cannot tell injected motion from its own,
-					// so tell it the cursor now lives there. Sent ahead of the
-					// burst so the peer's recenter cannot land after it.
-					c.notifyPeer(protocol.MachineSwitched)
-					for i := 0; i < 5; i++ {
-						mouse := &protocol.Packet{
-							Type: protocol.Mouse,
-							Src:  conn.MachineID,
-							Des:  conn.RemoteID,
-						}
-						mouse.Mouse.X = entryX
-						mouse.Mouse.Y = entryY
-						mouse.Mouse.DwFlags = protocol.WM_MOUSEMOVE
-						_ = conn.SendPacket(mouse)
-						time.Sleep(5 * time.Millisecond)
-					}
-				}()
+				c.switchToRemote(x, y)
 			}
 		}
 	}
+}
+
+// trackInward re-arms the edge on Wayland once the physical pointer has moved
+// rearmDistance raw units away from the edge since the last disarm.
+func (c *Capturer) trackInward(dx int32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.edge == nil || c.canSwitch {
+		return
+	}
+	if c.edgeSide == "right" {
+		dx = -dx
+	}
+	c.inward = max(0, c.inward+dx)
+	if c.inward >= rearmDistance {
+		c.canSwitch = true
+		c.inward = 0
+	}
+}
+
+// switchToRemote hands the cursor to the remote after it hit the local edge at (x, y).
+func (c *Capturer) switchToRemote(x, y int32) {
+	now := time.Now()
+	if now.Sub(c.lastSwitch) < 100*time.Millisecond {
+		return
+	}
+	c.lastSwitch = now
+
+	slog.Info("screen edge hit, switching to remote", "edge", c.edgeSide, "x", x, "y", y)
+
+	// Map local Y to remote entry point (proportional)
+	entryY := int32(float64(y) / float64(c.screen.Height) * 65535)
+
+	c.mu.Lock()
+	c.active = false
+	c.switchSent = time.Now()
+	c.edgeY = y
+	// Use the same pixel position for the initial burst and motion.
+	pixelX, entryX := c.remoteEntryLocked()
+	c.remoteX = pixelX
+	c.remoteY = int32(float64(y) / float64(c.screen.Height) * float64(c.remoteH))
+	c.canReturn = false // must move away from return edge first
+	c.mu.Unlock()
+
+	// Suppress local input (synchronous — one ioctl per device)
+	c.applyIsolation()
+
+	// Send mouse burst to the entry position on remote
+	// Multiple packets help Windows MWB register the switch reliably
+	c.mu.Lock()
+	conn, send := c.conn, c.sendFn
+	c.mu.Unlock()
+	go func() {
+		// A Linux peer cannot tell injected motion from its own,
+		// so tell it the cursor now lives there. Sent ahead of the
+		// burst so the peer's recenter cannot land after it.
+		c.notifyPeer(protocol.MachineSwitched)
+		if send == nil {
+			if conn == nil {
+				return
+			}
+			send = conn.SendPacket
+		}
+		for i := 0; i < 5; i++ {
+			mouse := &protocol.Packet{Type: protocol.Mouse}
+			if conn != nil {
+				mouse.Src, mouse.Des = conn.MachineID, conn.RemoteID
+			}
+			mouse.Mouse.X = entryX
+			mouse.Mouse.Y = entryY
+			mouse.Mouse.DwFlags = protocol.WM_MOUSEMOVE
+			_ = send(mouse)
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
 }
 
 var (
@@ -910,6 +989,9 @@ func parseEvent(buf []byte) inputEvent {
 
 func (c *Capturer) handleEvent(ev inputEvent) {
 	if c.IsActive() {
+		if ev.Type == evRel && ev.Code == relX {
+			c.trackInward(ev.Value)
+		}
 		return
 	}
 	// Suppress during switch grace period
@@ -1019,6 +1101,7 @@ func (c *Capturer) handleRel(ev inputEvent) {
 		c.switchSent = time.Time{}
 		c.lastActivated = time.Now()
 		c.canSwitch = false // block re-trigger until cursor moves away from edge
+		c.inward = 0
 		c.mu.Unlock()
 
 		// Move cursor away from edge SYNCHRONOUSLY before releasing the grab.

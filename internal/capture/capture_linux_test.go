@@ -32,6 +32,8 @@ func (p *blockingPointer) Close() {
 }
 
 func TestRunUsesPersistentPointerAndStopClosesIt(t *testing.T) {
+	t.Setenv("WAYLAND_DISPLAY", "")
+	t.Setenv("XDG_SESSION_TYPE", "x11")
 	pointer := &blockingPointer{started: make(chan struct{}), closed: make(chan struct{})}
 	c := New(nil, ScreenInfo{Width: 1920, Height: 1080}, "left")
 	c.pointer = pointer
