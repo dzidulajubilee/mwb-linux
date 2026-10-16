@@ -41,6 +41,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   session predates it, or the device not shared with the group.
 
 ### Added
+- Linux pairs keep their sides mirrored. The settings window records when the
+  side was chosen (`edge_changed`), each machine sends how long ago that was
+  (LinuxPeerInfo format 2), and when both put the other on the same side the
+  older choice adopts the mirror of the newer one, saves it and reconnects.
+  With no recorded time on either side, the machine whose name sorts last
+  adopts. `-edge` on the command line opts out.
 - Wait/Connect pairing: with `peer = "linux"`, `host` may be empty. That
   machine then waits for the other to connect, accepting only local-network
   sources with the shared key, and shows its own address to enter on the

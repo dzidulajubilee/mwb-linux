@@ -288,7 +288,8 @@ def describe_connection(st: dict) -> tuple[str, str, str]:
         return ("error", f"{title}, but both put the other on the {edge}",
                 f"This computer has {remote} on its {edge}, and {remote} has this one on its {edge} too. "
                 f"If {remote} actually sits to the {other_side} of this computer, swap the screens here and save; "
-                f"otherwise swap them on {remote}.")
+                f"otherwise swap them on {remote}. With the same mwb version on both, the side "
+                f"chosen most recently is copied to the other computer automatically.")
     here = st.get("sharing")
     if here is None:
         here = bool(st.get("bidirectional"))

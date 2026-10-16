@@ -39,6 +39,9 @@ type Status struct {
 	Outbound      bool     `json:"outbound,omitempty"`
 	Bidirectional bool     `json:"bidirectional"`
 	Edge          string   `json:"edge"`
+	// EdgeFrom names the Linux peer whose more recent side choice this
+	// machine adopted, mirrored; empty when the side is this machine's own.
+	EdgeFrom string `json:"edge_from,omitempty"`
 	// Sharing is whether this machine actually forwards its input: requested
 	// and capture started. Known once connected.
 	Sharing *bool `json:"sharing,omitempty"`
@@ -109,6 +112,12 @@ func (w *Writer) Peer(width, height int32, edge string, sharing bool) error {
 		s.PeerEdge = edge
 		s.PeerSharing = &sharing
 	})
+}
+
+// AdoptedEdge records that this machine switched to edge to mirror the side
+// the peer named from chose more recently. It lasts for the process lifetime.
+func (w *Writer) AdoptedEdge(edge, from string) error {
+	return w.write(func(s *Status) { s.Edge, s.EdgeFrom = edge, from })
 }
 
 // Remove deletes the status file on clean shutdown. A crash leaves it behind;

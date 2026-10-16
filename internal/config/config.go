@@ -18,7 +18,10 @@ type Config struct {
 	RemoteWidth  int    `toml:"remote_width"`
 	RemoteHeight int    `toml:"remote_height"`
 	Edge         string `toml:"edge"`
-	Clipboard    *bool  `toml:"clipboard"` // nil = unset, treated as enabled
+	// EdgeChanged is when edge was last chosen, in Unix seconds; 0 = unknown.
+	// mwb-gui sets it, and mwb sets it when it adopts a Linux peer's choice.
+	EdgeChanged int64 `toml:"edge_changed"`
+	Clipboard   *bool `toml:"clipboard"` // nil = unset, treated as enabled
 
 	// FileTransfer controls the MWB file copy channel. nil = enabled.
 	FileTransfer *bool `toml:"file_transfer"`

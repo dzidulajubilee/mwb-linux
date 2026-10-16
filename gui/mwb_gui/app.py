@@ -12,6 +12,7 @@ import secrets
 import socket
 import sys
 import threading
+import time
 
 import gi
 
@@ -618,12 +619,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self.host_hint.set_visible(peer == "linux")
         self.name_hint.set_visible(peer == "linux")
         self.name_hint.set_text("Must be different from the other computer’s name.")
-        if v["bidirectional"] and os.environ.get("XDG_SESSION_TYPE") == "wayland":
-            self.bidi_sub.set_text("Your session uses Wayland. Controlling the other computer needs an X11 "
-                                   "session; choose “Ubuntu on Xorg” at the login screen.")
-        else:
-            self.bidi_sub.set_text("Move the pointer past the shared edge to use this keyboard and mouse there. "
-                                   "When off, the other computer can still control this one.")
+        self.bidi_sub.set_text("Move the pointer past the shared edge to use this keyboard and mouse there. "
+                               "When off, the other computer can still control this one.")
 
         problems = cf.validate(v)
         advice = cf.warnings(v)
@@ -688,6 +685,10 @@ class MainWindow(Gtk.ApplicationWindow):
                 updates.setdefault(k, fv[k])
         if not updates.get("name", True):
             updates.pop("name")  # empty means "use the hostname"; don't write ""
+        if "edge" in updates:
+            # With a Linux peer, the most recently chosen side wins and the
+            # other computer saves the mirror of it.
+            updates["edge_changed"] = int(time.time())
         try:
             cf.save(updates, self.config_path)
         except (cf.ConfigError, OSError) as exc:
@@ -811,6 +812,15 @@ class MainWindow(Gtk.ApplicationWindow):
             self._connected_remote = remote
             self._peer_screen = peer_screen
             self._changed()  # redraws the arrangement and the size hint
+
+        # mwb saved the mirror of a side chosen more recently on the peer.
+        adopted_from = str(st.get("edge_from") or "") if st else ""
+        adopted = (adopted_from, st.get("edge")) if adopted_from and st else None
+        if (adopted and adopted != getattr(self, "_adoption_seen", None) and adopted[1] in ("left", "right")
+                and adopted[1] != self._loaded.get("edge") and "edge" not in self.changed_values()):
+            self._adoption_seen = adopted
+            self.reload()
+            self.save_msg.set_text(f"Screen arrangement updated to match {adopted_from}, where it was changed more recently.")
 
         # A crash loop is still a started unit: offer Stop to end it.
         started = unit.running or unit.crash_looping

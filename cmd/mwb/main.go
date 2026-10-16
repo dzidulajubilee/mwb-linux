@@ -132,6 +132,16 @@ func main() {
 	if *edgeSide == "" {
 		*edgeSide = "right" // final fallback
 	}
+	// With a Linux peer, a side clash resolves itself: the older choice
+	// adopts the mirror of the newer one and saves it. A side forced with
+	// -edge stays as given.
+	edgeChanged := cfg.EdgeChanged
+	sides := sideSync{edge: edgeSide, changed: &edgeChanged, name: cfg.Name}
+	if !flagWasSet("edge") {
+		sides.save = func(edge string, changed int64) error {
+			return config.SaveEdge(*configPath, edge, changed)
+		}
+	}
 
 	// bidirectional = true in config enables it for the service; an explicit
 	// -bidi or -bidi=false on the command line still wins.
@@ -410,7 +420,7 @@ func main() {
 			if linuxPeer {
 				// Tell the peer our screen, side and sharing mode, and take
 				// its own, so neither user types the other's settings.
-				exchangePeerInfo(conn, handler, cap, *edgeSide, sharing, statusFile)
+				exchangePeerInfo(conn, handler, cap, sides, sharing, statusFile)
 			}
 
 			if err := network.ReceiveLoop(conn, handler); err != nil {
