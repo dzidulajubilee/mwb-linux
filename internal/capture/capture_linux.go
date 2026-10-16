@@ -91,6 +91,7 @@ type Capturer struct {
 	remoteW       int32                     // detected remote screen width
 	remoteH       int32                     // detected remote screen height
 	accelMult     float64                   // scaling applied to raw evdev deltas (config: accel_multiplier)
+	accel         pointerAccel              // speed-dependent gain on top of accelMult
 	edgeY         int32                     // Y position where cursor left local screen
 	canSwitch     bool                      // true once cursor has been away from edge since activation
 	canReturn     bool                      // true once cursor has moved away from the remote return edge
@@ -495,6 +496,11 @@ func (c *Capturer) addDevice(path string) {
 	var tp *touchpad
 	if grabbable {
 		tp = touchpadFor(f)
+	}
+	if tp != nil {
+		c.mu.Lock()
+		tp.scale = c.accelMult / defaultAccelMultiplier
+		c.mu.Unlock()
 	}
 
 	c.mu.Lock()
@@ -1052,11 +1058,14 @@ func (c *Capturer) handleRel(ev inputEvent) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	t := ev.Sec*1_000_000 + ev.Usec
 	switch ev.Code {
 	case relX:
-		c.moveRemoteLocked(applyAcceleration(ev.Value, c.accelMult), 0)
+		gain := c.accelMult * c.accel.factorFor(t, ev.Value, 0)
+		c.moveRemoteLocked(applyAcceleration(ev.Value, gain), 0)
 	case relY:
-		c.moveRemoteLocked(0, applyAcceleration(ev.Value, c.accelMult))
+		gain := c.accelMult * c.accel.factorFor(t, 0, ev.Value)
+		c.moveRemoteLocked(0, applyAcceleration(ev.Value, gain))
 	case relWheel:
 		c.sendMouseLocked(0, 0, ev.Value*120, protocol.WM_MOUSEWHEEL)
 	}

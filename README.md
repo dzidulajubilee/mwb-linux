@@ -381,7 +381,7 @@ keep the client on a trusted network segment.
 | `remote_height` | 1080 | Remote screen height in pixels. A Linux peer reports its own, which takes precedence |
 | `edge` | left | Screen edge for switching: `left` or `right` |
 | `clipboard` | true | Clipboard sync: set `false` to disable text/image sharing |
-| `accel_multiplier` | 2.0 | Cursor speed when controlling Windows. Lower it (e.g. `1.0`, `0.5`) if the Windows cursor feels too fast |
+| `accel_multiplier` | 2.0 | Cursor speed when controlling the other machine (mouse and touchpad). Fast movement accelerates up to 3× this. Lower it (e.g. `1.0`) if the remote cursor feels too fast, raise it if too slow |
 | `inbound_multiplier` | 1.0 | Cursor speed when Windows controls Linux. `1.0` mirrors Windows exactly; raise it for faster inbound movement |
 | `file_transfer` | true | Enable the MWB file copy channel. Keep `clipboard = true`: clipboard events trigger transfers in both directions |
 | `file_dir` | — | Deprecated and ignored. Windows files use hidden clipboard backing storage under `$XDG_CACHE_HOME/mwb/clipboard` and a native GNOME/generic file selection, then appear in a visible folder only on paste |
@@ -532,7 +532,7 @@ scripts/
   machine even while the cursor is on the remote. Power and sleep buttons are
   likewise never grabbed, which keeps the physical power button available as a
   last-resort recovery path.
-- **Cursor speed / drift** — Remote cursor movement scales raw evdev deltas by `accel_multiplier` (default 2×); lower it if the Windows cursor feels too fast (the Windows side adds no acceleration of its own). Tracking is open-loop, so the virtual cursor may still drift from the actual position over long sessions.
+- **Cursor speed / drift** — Remote cursor movement scales raw evdev deltas by `accel_multiplier` (default 2×), rising to 3× that for fast movement; lower it if the remote cursor feels too fast (the other side adds no acceleration of its own). Tracking is open-loop, so the virtual cursor may still drift from the actual position over long sessions.
 - **Linux pairs share one cursor** — With `peer = "linux"` and both machines
   bidirectional, whichever machine does not currently own the cursor forwards
   its own keyboard and mouse to the machine that does. Its estimate of where

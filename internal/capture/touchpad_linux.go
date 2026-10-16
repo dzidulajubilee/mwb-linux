@@ -35,8 +35,8 @@ const (
 	// movement stays precise and a fast swipe crosses the screen.
 	touchpadPxPerMM  = 12.0
 	touchpadMinGain  = 0.6
-	touchpadMaxGain  = 2.5
-	touchpadGainMMPS = 80.0 // finger speed (mm/s) that adds 1.0 to the gain
+	touchpadMaxGain  = 4.0
+	touchpadGainMMPS = 50.0 // finger speed (mm/s) that adds 1.0 to the gain
 
 	tapMaxMicros    = 180_000
 	tapMaxTravelMM  = 1.5
@@ -47,6 +47,7 @@ const (
 // monitorDevice goroutine touches it, so it needs no lock.
 type touchpad struct {
 	resX, resY float64 // units per millimetre
+	scale      float64 // accel_multiplier relative to its default; 0 means 1
 
 	x, y          int32
 	touching      bool
@@ -237,6 +238,9 @@ func (t *touchpad) move(dxMM, dyMM float64, dtMicros int64, out touchpadOutput) 
 	if dtMicros > 0 {
 		speed := math.Hypot(dxMM, dyMM) / (float64(dtMicros) / 1e6)
 		gain = min(touchpadMaxGain, max(touchpadMinGain, touchpadMinGain+speed/touchpadGainMMPS))
+	}
+	if t.scale > 0 {
+		gain *= t.scale
 	}
 	t.fracX += dxMM * touchpadPxPerMM * gain
 	t.fracY += dyMM * touchpadPxPerMM * gain

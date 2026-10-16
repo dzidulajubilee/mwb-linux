@@ -11,6 +11,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   receive-only machines connect but never move the cursor. An explicit `false`
   is still honored, and PowerToys peers keep receive-only.
 
+### Changed
+- The remote cursor accelerates like a local one: the gain grows with how fast
+  the mouse moves, from `accel_multiplier` when slow up to three times that
+  for a fast flick, so crossing the other screen no longer takes several
+  swipes. Touchpad movement is faster too, and `accel_multiplier` now scales
+  it as well.
+
 ### Fixed
 - A touchpad could not control the other computer: its first touch handed the
   cursor straight back, because touchpads report absolute finger positions.

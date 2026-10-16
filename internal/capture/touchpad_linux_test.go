@@ -70,9 +70,9 @@ func TestTouchpadOneFingerMoves(t *testing.T) {
 	if r.dx <= 0 || r.dy >= 0 {
 		t.Fatalf("move = (%d,%d), want right and up", r.dx, r.dy)
 	}
-	// 10 mm at 100 mm/s: 12 px/mm × gain 1.85 ≈ 222 px.
-	if r.dx < 150 || r.dx > 300 {
-		t.Fatalf("dx = %d px for 10 mm, want about 220", r.dx)
+	// ~10 mm at 100 mm/s: 12 px/mm × gain 2.6 ≈ 330 px.
+	if r.dx < 250 || r.dx > 420 {
+		t.Fatalf("dx = %d px for 10 mm, want about 330", r.dx)
 	}
 	if len(r.buttons) != 0 {
 		t.Fatalf("a drag must not click: %v", r.buttons)
