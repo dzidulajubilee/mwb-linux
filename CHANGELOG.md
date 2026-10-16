@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- A `/dev/uinput` error now names its actual cause and the one fix that
+  applies, instead of printing every setup step twice (once inside the error
+  text and again from `main.go`, plus a duplicated last line). The causes are:
+  module not loaded, not in the `input` group, added to the group but the
+  session predates it, or the device not shared with the group.
+
 ### Added
 - Linux-to-Linux pairing: set `peer = "linux"` on two mwb-linux machines to
   share one keyboard and mouse with no Windows PC. Both machines keep the same
@@ -19,6 +26,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   no secrets).
 - `mwb-gui`, an optional GTK 4 settings and status window (`make install-gui`).
   It edits only the settings you change and keeps the rest of `config.toml`.
+  It reports a service stuck restarting after errors as such (not "Running"),
+  and diagnoses `/dev/uinput` access itself.
 - The `.deb` now includes `mwb-gui` and an app-menu entry, recommends its GTK
   packages, and adds the installing `sudo` user to the `input` group (as
   `scripts/install.sh` already did). `make deb` builds it locally.

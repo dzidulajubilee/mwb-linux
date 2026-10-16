@@ -74,5 +74,35 @@ class StatusFileTests(unittest.TestCase):
                 os.environ["XDG_RUNTIME_DIR"] = old
 
 
+
+class UinputDiagnosisTests(unittest.TestCase):
+    def test_each_cause(self):
+        d = service.diagnose_uinput
+        self.assertIsNone(d(True, True, True, True, True))
+        self.assertIn("modprobe", d(False, False, False, False, False)[1])
+        # Right after installing: in the group on disk, not in this session.
+        self.assertEqual(d(True, False, True, True, False)[0], "Restart the computer to finish setup")
+        self.assertIn("usermod", d(True, False, True, False, False)[1])
+        self.assertIn("groupadd", d(True, False, False, False, False)[1])
+        self.assertIn("ls -l /dev/uinput", d(True, False, True, True, True)[1])
+
+    def test_uinput_problem_missing_device(self):
+        self.assertIn("isn't loaded", service.uinput_problem("/nonexistent/uinput")[0])
+
+
+class CrashLoopTests(unittest.TestCase):
+    def test_auto_restart_is_not_running(self):
+        # What systemd reports between restarts of a failing service, the
+        # state the window wrongly showed as "Running".
+        u = service.UnitState(installed=True, active="activating", sub="auto-restart")
+        self.assertTrue(u.crash_looping)
+        self.assertFalse(u.running)
+
+    def test_healthy_states(self):
+        self.assertTrue(service.UnitState(active="active", sub="running").running)
+        self.assertTrue(service.UnitState(active="activating", sub="start").running)
+        self.assertFalse(service.UnitState(active="active", sub="running").crash_looping)
+
+
 if __name__ == "__main__":
     unittest.main()

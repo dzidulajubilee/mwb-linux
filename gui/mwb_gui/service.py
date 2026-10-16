@@ -7,8 +7,10 @@ GUI never needs or asks for root.
 
 from __future__ import annotations
 
+import grp
 import json
 import os
+import pwd
 import shlex
 import shutil
 import subprocess
@@ -22,12 +24,24 @@ _TIMEOUT = 10  # seconds; systemctl answers in milliseconds when healthy
 class UnitState:
     installed: bool = False
     active: str = "unknown"      # active, inactive, failed, activating, ...
+    sub: str = ""                # running, auto-restart, dead, failed, ...
     enabled: bool = False
     exec_args: list[str] | None = None  # the ExecStart command line, if known
     error: str = ""
 
     @property
+    def crash_looping(self) -> bool:
+        """Exited with an error and waiting for systemd to start it again.
+
+        systemd reports this as "activating"/"auto-restart", which must not
+        be shown as running: the client is not up at all.
+        """
+        return self.sub == "auto-restart"
+
+    @property
     def running(self) -> bool:
+        if self.crash_looping:
+            return False
         return self.active in ("active", "activating", "reloading")
 
     def overriding_flags(self) -> list[str]:
@@ -69,7 +83,7 @@ def _parse_exec_start(value: str) -> list[str] | None:
 
 def query() -> UnitState:
     try:
-        r = _systemctl("show", UNIT, "--property=LoadState,ActiveState,UnitFileState,ExecStart")
+        r = _systemctl("show", UNIT, "--property=LoadState,ActiveState,SubState,UnitFileState,ExecStart")
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
         return UnitState(error=str(exc))
     if r.returncode != 0:
@@ -81,6 +95,7 @@ def query() -> UnitState:
     return UnitState(
         installed=props.get("LoadState") == "loaded",
         active=props.get("ActiveState", "unknown"),
+        sub=props.get("SubState", ""),
         enabled=props.get("UnitFileState") in ("enabled", "enabled-runtime"),
         exec_args=_parse_exec_start(props.get("ExecStart", "")),
     )
@@ -114,6 +129,59 @@ def recent_log(lines: int = 15) -> str:
     except (subprocess.TimeoutExpired, OSError) as exc:
         return str(exc)
     return (r.stdout or r.stderr).strip() or "No log entries yet."
+
+
+# --- /dev/uinput access ------------------------------------------------------
+
+UINPUT = "/dev/uinput"
+
+
+def diagnose_uinput(exists: bool, accessible: bool, group_exists: bool,
+                    in_group_db: bool, in_group_now: bool) -> tuple[str, str] | None:
+    """Return (title, fix) if mwb would be refused /dev/uinput, else None.
+
+    Mirrors the client's own diagnosis (cmd/mwb/uinput_help.go), so the window
+    can say what to do before the user digs through a log.
+    """
+    if not exists:
+        return ("The uinput kernel module isn't loaded",
+                "Run: sudo modprobe uinput")
+    if accessible:
+        return None
+    if not group_exists:
+        return ("This system has no input group",
+                "Reinstall the mwb-linux package, or run: sudo groupadd --system input")
+    if in_group_db and not in_group_now:
+        return ("Restart the computer to finish setup",
+                "You were added to the input group after this session started. "
+                "Logging out is often not enough; restart the computer.")
+    if not in_group_db:
+        return ("Your account needs the input group",
+                "Run: sudo usermod -aG input $USER, then restart the computer.")
+    return ("mwb can't use /dev/uinput",
+            "Check the device's permissions with: ls -l /dev/uinput. "
+            "It should show the input group, as crw-rw----.")
+
+
+def uinput_problem(path: str = UINPUT) -> tuple[str, str] | None:
+    """Check /dev/uinput for the current user. The GUI runs in the same login
+    session as the service, so its groups are the service's groups."""
+    exists = os.path.exists(path)
+    accessible = exists and os.access(path, os.R_OK | os.W_OK)
+    group_exists = in_db = in_now = False
+    if exists and not accessible:
+        try:
+            g = grp.getgrnam("input")
+            group_exists = True
+            try:
+                pw = pwd.getpwuid(os.getuid())
+                in_db = pw.pw_name in g.gr_mem or pw.pw_gid == g.gr_gid
+            except KeyError:
+                pass
+            in_now = g.gr_gid in os.getgroups() or os.getegid() == g.gr_gid
+        except KeyError:
+            pass
+    return diagnose_uinput(exists, accessible, group_exists, in_db, in_now)
 
 
 # --- status file written by the client (internal/status) ---------------------
