@@ -12,6 +12,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is still honored, and PowerToys peers keep receive-only.
 
 ### Fixed
+- A touchpad could not control the other computer: its first touch handed the
+  cursor straight back, because touchpads report absolute finger positions.
+  mwb now translates them while the cursor is remote: one finger moves, a tap
+  clicks (two fingers right-click, three middle-click), two fingers scroll,
+  and pressing the pad with two fingers right-clicks. Touchscreens still
+  bring the cursor back. Touchpad motion also re-arms the Wayland edge.
 - The cursor never crossed to the other computer from a Wayland session
   (GNOME, Zorin, Ubuntu). XWayland only learns the pointer position while it
   is over an X11 window, so polling saw a frozen position and never reached
