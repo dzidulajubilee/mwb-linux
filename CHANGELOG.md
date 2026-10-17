@@ -26,6 +26,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it as well.
 
 ### Fixed
+- The release `.deb` built by GoReleaser now includes `mwb-gui`, its menu
+  entry and the tray icon's login entry, as the README describes, and
+  recommends the GTK 4 Python packages it needs.
 - A touchpad could not control the other computer: its first touch handed the
   cursor straight back, because touchpads report absolute finger positions.
   mwb now translates them while the cursor is remote: one finger moves, a tap
