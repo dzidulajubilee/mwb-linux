@@ -410,6 +410,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._connected_remote = ""
         self._peer_screen = None  # (w, h) a connected Linux peer reported
         self._edge = "left"  # the two-machine side: where the other computer is
+        self._waiting_for_settings = False  # mwb runs but has no usable settings
         self._layout_order: list[str] = []  # the screen order as the user arranged it
         self._layout_dirty = False
         self._group: dict | None = None  # a running group's layout, members and pointer
@@ -507,6 +508,14 @@ class MainWindow(Gtk.ApplicationWindow):
         self.host_hint, self.host_err = self._field(grid, 1, "Address", self.host)
         self._local_address = service.local_address()
 
+        self._interfaces: list[service.Interface] = []
+        self._interface_names: list[str] = []
+        self.iface = Gtk.DropDown.new_from_strings(["All interfaces (recommended)"])
+        self.iface.connect("notify::selected", self._changed)
+        self.iface_hint, self.iface_err = self._field(
+            grid, 2, "Network", self.iface,
+            "Which network mwb uses to reach the other computers. Pick one to listen and connect only there.")
+
         key_row = Gtk.Box(spacing=6)
         self.key = Gtk.PasswordEntry(hexpand=True)
         self.key.set_show_peek_icon(True)
@@ -519,12 +528,12 @@ class MainWindow(Gtk.ApplicationWindow):
         key_row.append(self.key)
         key_row.append(gen)
         key_row.append(copy)
-        self.key_hint, self.key_err = self._field(grid, 2, "Security key", key_row,
+        self.key_hint, self.key_err = self._field(grid, 3, "Security key", key_row,
                                                   "Both computers must use the same key.", label_for=self.key)
 
         self.name = Gtk.Entry(placeholder_text=socket.gethostname()[: cf.NAME_MAX], max_length=cf.NAME_MAX)
         self.name.connect("changed", self._changed)
-        self.name_hint, self.name_err = self._field(grid, 3, "This computer’s name", self.name)
+        self.name_hint, self.name_err = self._field(grid, 4, "This computer’s name", self.name)
 
         size_row = Gtk.Box(spacing=6)
         self.rw = Gtk.SpinButton.new_with_range(200, 16384, 1)
@@ -536,7 +545,7 @@ class MainWindow(Gtk.ApplicationWindow):
         size_row.append(Gtk.Label(label="×"))
         size_row.append(self.rh)
         size_row.append(_dim("pixels", wrap=False))
-        self.size_hint, self.size_err = self._field(grid, 4, "Other screen size", size_row,
+        self.size_hint, self.size_err = self._field(grid, 5, "Other screen size", size_row,
                                        "Used to place the pointer on the other screen.", label_for=self.rw)
         return box
 
@@ -640,7 +649,17 @@ class MainWindow(Gtk.ApplicationWindow):
             self.files.set_active(bool(values["file_transfer"]))
             self._edge = str(values["edge"])
             self._layout_order, self._layout_dirty = [], False
+            self._refresh_interfaces(str(values["interface"]))
             self.btn_apply_restart.set_visible(False)
+            if doc is not None and not doc.lines:
+                # First run: a new key, another Linux computer, and wait for
+                # it to connect. One Save and this computer is listening.
+                self.peer.set_selected(1)
+                self._last_peer = "linux"
+                self.bidi.set_active(True)
+                self.key.set_text(generate_key())
+                self.save_msg.set_text("Not set up yet. Check the settings, copy the security key to the "
+                                       "other computer, then click Save.")
         finally:
             self._loading = False
         self._changed()
@@ -652,6 +671,7 @@ class MainWindow(Gtk.ApplicationWindow):
             "key": self.key.get_text(),
             "name": self.name.get_text().strip(),
             "edge": self._edge,
+            "interface": self._selected_interface(),
             "layout": list(self._layout_order) if self._layout_dirty else list(self._loaded.get("layout") or []),
             "bidirectional": self.bidi.get_active(),
             "clipboard": self.clip.get_active(),
@@ -664,6 +684,44 @@ class MainWindow(Gtk.ApplicationWindow):
         """Only the settings the user changed, so a save never overwrites an
         edit someone made to another key in the file meanwhile."""
         return {k: v for k, v in self.form_values().items() if self._loaded.get(k) != v}
+
+    def _refresh_interfaces(self, wanted: str | None = None):
+        """Fill the Network list; keep the current choice, even if that
+        interface is gone right now (a cable unplugged)."""
+        if wanted is None:
+            wanted = self._selected_interface()
+        found = service.list_interfaces()
+        shown = [i for i in found if not i.hidden or i.name == wanted]
+        if wanted and wanted not in [i.name for i in shown]:
+            shown.append(service.Interface(name=wanted, kind="Missing", up=False, addresses=[]))
+        names = [i.name for i in shown]
+        labels = [i.label() for i in shown]
+        self._interfaces = shown
+        if names == self._interface_names and getattr(self, "_iface_labels", None) == labels:
+            return
+        self._interface_names, self._iface_labels = names, labels
+        was_loading, self._loading = self._loading, True
+        try:
+            self.iface.set_model(Gtk.StringList.new(["All interfaces (recommended)"] + labels))
+            self.iface.set_selected(names.index(wanted) + 1 if wanted in names else 0)
+        finally:
+            self._loading = was_loading
+
+    def _selected_interface(self) -> str:
+        i = self.iface.get_selected()
+        if 1 <= i <= len(self._interface_names):
+            return self._interface_names[i - 1]
+        return ""
+
+    def _here_address(self) -> str:
+        """The address the other computers should enter for this one."""
+        chosen = self._selected_interface()
+        for i in self._interfaces:
+            if i.name == chosen and i.address:
+                return i.address
+        if chosen:
+            return ""
+        return self._local_address or (self._status_addresses[0] if self._status_addresses else "")
 
     def _arrangement_changed(self, order: list[str]):
         if OTHER in order or ME in order:
@@ -779,7 +837,7 @@ class MainWindow(Gtk.ApplicationWindow):
         # Like pairing PowerToys machines: one waits, the other connects.
         if peer == "linux":
             self.host.set_placeholder_text("Leave empty to wait for the other computer")
-            here = self._local_address or (self._status_addresses[0] if self._status_addresses else "")
+            here = self._here_address()
             where = (f"this computer’s address, {here}" if here
                      else "this computer’s address (run hostname -I to see it)")
             self.host_hint.set_text(
@@ -850,7 +908,8 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _save(self, *_):
         updates = self.changed_values()
-        if not os.path.exists(self.config_path):
+        first_run = not os.path.exists(self.config_path)
+        if first_run:
             # A brand-new file needs the required settings even if unchanged.
             fv = self.form_values()
             # bidirectional is left out: unset means the peer type's default.
@@ -870,9 +929,15 @@ class MainWindow(Gtk.ApplicationWindow):
             self.save_msg.set_text(f"Not saved: {exc}")
             return
         self.reload()
-        if self._unit.running:
+        if self._unit.running and self._waiting_for_settings:
+            # mwb is running and waiting for exactly this file: it starts now.
+            self.save_msg.set_text("Saved. mwb is starting with these settings.")
+        elif self._unit.running:
             self.save_msg.set_text("Saved. Restart the service to use the new settings.")
             self.btn_apply_restart.set_visible(True)
+        elif first_run and self._unit.installed:
+            self.save_msg.set_text("Saved. Starting mwb…")
+            self._service("start")
         else:
             self.save_msg.set_text("Saved.")
 
@@ -941,7 +1006,20 @@ class MainWindow(Gtk.ApplicationWindow):
         self._poll_busy = False
         self._unit = unit
         connected = False
-        if st and st.get("state") == "connected" and st.get("group"):
+        state = str(st.get("state") or "") if st else ""
+        self._waiting_for_settings = state in ("not_configured", "config_error")
+        if state == "not_configured":
+            kind, title = "wait", "Not set up yet"
+            detail = ("mwb is running and waiting for its settings. Check them below and click Save; "
+                      "it starts as soon as they are saved.")
+        elif state == "config_error":
+            kind, title = "error", "The settings can’t be used"
+            detail = f"{st.get('error') or 'The settings file has a problem.'} Fix it below and save; mwb retries by itself."
+        elif state == "no_network":
+            kind, title = "wait", f"Waiting for the network {st.get('interface') or ''}".rstrip()
+            detail = (f"{st.get('error') or 'The chosen network has no address yet.'} "
+                      "mwb starts once it is connected, or choose another network below.")
+        elif st and st.get("state") == "connected" and st.get("group"):
             kind, title, detail = service.describe_group(st)
             connected = True
         elif st and st.get("state") == "connected":
@@ -976,6 +1054,9 @@ class MainWindow(Gtk.ApplicationWindow):
         self.status_title.set_markup(f"<b>{GLib.markup_escape_text(title)}</b>")
         self.status_detail.set_text(detail)
         self.status_detail.set_visible(bool(detail))
+        self._polls = getattr(self, "_polls", 0) + 1
+        if self._polls % 5 == 0:
+            self._refresh_interfaces()  # a cable plugged in, Wi-Fi joined
         addresses = [str(a) for a in (st.get("addresses") or [])] if st else []
         if addresses != self._status_addresses:
             self._status_addresses = addresses

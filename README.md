@@ -234,7 +234,10 @@ PC involved. Their screens sit in one row, left to right, and the pointer
 walks across all of them. Setting up works like PowerToys: one computer
 waits, and the others connect to it.
 
-**In the settings window** (`mwb-gui`), on every computer:
+**In the settings window** (`mwb-gui`), on every computer. On a fresh
+install the window is already filled in for this: a Linux peer, a new
+security key, and waiting for the other computers, so the computer that
+waits only needs **Save**.
 
 1. Set **Other computer** to *Linux with mwb-linux*.
 2. **Security key:** click Generate on one computer, then Copy it and use
@@ -242,7 +245,9 @@ waits, and the others connect to it.
 3. **Address:** leave it empty on one computer, so that it waits. The window
    shows that computer's address. On each of the others, enter that address.
    You only ever enter one address: the computers tell each other where the
-   rest are, and connect to all of them.
+   rest are, and connect to all of them. With several networks (Wi-Fi and
+   Ethernet, a VPN), **Network** picks the one to use; the address shown
+   follows it.
 4. **Name:** give each computer a different name.
 5. Click **Save**, then **Start**.
 6. Once they are connected, arrange the screens in the order they stand on
@@ -395,6 +400,7 @@ keep the client on a trusted network segment.
 | `edge` | left | Screen edge for switching: `left` or `right`. With `peer = "linux"`, used only until a `layout` is saved |
 | `layout` | — | `peer = "linux"` only: the machine names left to right, e.g. `["desk", "laptop"]`, up to 6. mwb-gui and mwb keep it, and it stays in sync across the group |
 | `layout_changed` | — | When `layout` was chosen, in Unix seconds; the most recent choice wins across the group |
+| `interface` | — | Network interface to use, e.g. `wlp4s0`. mwb then listens only on that interface's address and connects out from it, and waits while it has none. Empty means every interface. Saved by name, so a new DHCP address keeps working |
 | `clipboard` | true | Clipboard sync: set `false` to disable text/image sharing |
 | `accel_multiplier` | 2.0 | Cursor speed when controlling the other machine (mouse and touchpad). Fast movement accelerates up to 3× this. Lower it (e.g. `1.0`) if the remote cursor feels too fast, raise it if too slow |
 | `inbound_multiplier` | 1.0 | Cursor speed when Windows controls Linux. `1.0` mirrors Windows exactly; raise it for faster inbound movement |

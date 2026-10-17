@@ -27,6 +27,12 @@ Use `mwb-gui --config PATH` to edit a different file.
 - **Sharing.** Choose whether this computer controls the other one
   (`bidirectional`), whether to share the clipboard (`clipboard`) and whether
   to copy files (`file_transfer`).
+- **Network.** Every network interface with its address, and which one
+  mwb uses (`interface`; "All interfaces" leaves it empty). The address to
+  enter on the other computer follows the choice.
+- **First run.** With no `config.toml` yet, the form starts as a Linux peer
+  with a generated key, waiting for the other computer. mwb runs in the
+  background meanwhile and starts as soon as the settings are saved.
 - **Background service.** Start, stop or restart the service, choose whether
   it starts at login, and read the recent log.
 - **Live status.** Read from `$XDG_RUNTIME_DIR/mwb/status.json`, which the

@@ -24,6 +24,9 @@ func peerHost(configured string, conn *network.Conn) string {
 // localAddresses lists this machine's local-network addresses, the ones the
 // other computer can enter as host to reach a waiting machine.
 func localAddresses() []string {
+	if ip := network.BindAddress(); ip != nil {
+		return []string{ip.String()} // restricted to one interface
+	}
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return nil

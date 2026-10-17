@@ -189,5 +189,36 @@ class GroupDescriptionTests(unittest.TestCase):
         self.assertIn("stay here", detail)
 
 
+class InterfaceTests(unittest.TestCase):
+    def test_parses_and_classifies_interfaces(self):
+        sysfs = tempfile.mkdtemp()
+        os.makedirs(os.path.join(sysfs, "wlp4s0", "wireless"))
+        os.makedirs(os.path.join(sysfs, "enp0s31f6", "device"))
+        text = json.dumps([
+            {"ifname": "lo", "flags": ["LOOPBACK", "UP"], "operstate": "UNKNOWN",
+             "addr_info": [{"family": "inet", "local": "127.0.0.1"}]},
+            {"ifname": "enp0s31f6", "flags": ["NO-CARRIER"], "operstate": "DOWN", "addr_info": []},
+            {"ifname": "wlp4s0", "operstate": "UP", "addr_info": [
+                {"family": "inet6", "local": "fe80::1"}, {"family": "inet", "local": "10.20.25.186"}]},
+            {"ifname": "docker0", "operstate": "DOWN", "addr_info": [{"family": "inet", "local": "172.17.0.1"}]},
+            {"ifname": "tailscale0", "operstate": "UNKNOWN", "addr_info": [{"family": "inet", "local": "100.64.1.2"}]},
+        ])
+        got = {i.name: i for i in service.parse_ip_json(text, sysfs)}
+        self.assertNotIn("lo", got)
+        self.assertEqual((got["wlp4s0"].kind, got["wlp4s0"].address, got["wlp4s0"].up), ("Wi-Fi", "10.20.25.186", True))
+        self.assertEqual((got["enp0s31f6"].kind, got["enp0s31f6"].up), ("Ethernet", False))
+        self.assertIn("not connected", got["enp0s31f6"].label())
+        self.assertTrue(got["docker0"].hidden)
+        self.assertEqual(got["tailscale0"].kind, "VPN")
+        self.assertEqual(list(got)[0], "wlp4s0")  # connected ones first
+        self.assertEqual(service.parse_ip_json("not json"), [])
+
+    def test_pick_address_matches_the_client(self):
+        self.assertEqual(service.pick_address(["fe80::1", "2001:db8::5", "192.168.1.7"]), "192.168.1.7")
+        self.assertEqual(service.pick_address(["100.64.0.9", "10.0.0.4"]), "10.0.0.4")
+        self.assertEqual(service.pick_address(["fe80::1", "100.64.0.9"]), "100.64.0.9")
+        self.assertEqual(service.pick_address(["fe80::1", "169.254.3.3"]), "")
+
+
 if __name__ == "__main__":
     unittest.main()

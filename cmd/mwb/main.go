@@ -118,10 +118,10 @@ func main() {
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		fmt.Fprintf(os.Stderr, "\nCreate config at %s with:\n\n", *configPath)
-		fmt.Fprintf(os.Stderr, "  host = \"192.168.1.100\"\n  key = \"YourSecurityKey\"\n  name = \"linux\"\n\n")
-		os.Exit(1)
+		// Without usable settings, wait for them rather than exit: an exit
+		// makes systemd restart mwb every few seconds, forever, on a fresh
+		// install. Saving the settings starts it.
+		cfg = waitForConfig(*configPath, err)
 	}
 
 	// Apply config defaults for flags not explicitly set on the command line.
@@ -156,6 +156,11 @@ func main() {
 			slog.Warn("peer = linux sends physical key positions; keyboard_layout other than auto/us may type the wrong characters",
 				"keyboard_layout", keyboardLayout)
 		}
+	}
+
+	if cfg.Interface != "" {
+		st := status.NewWriter(status.Path(), status.Status{PID: os.Getpid(), Version: version, Interface: cfg.Interface})
+		network.SetBindAddress(waitForInterface(cfg.Interface, st))
 	}
 
 	// PowerToys 0.101 changed the stream encryption. Pick the scheme before any
@@ -227,6 +232,7 @@ func main() {
 		Bidirectional: *bidirectional,
 		Edge:          *edgeSide,
 		Clipboard:     clipboardEnabled,
+		Interface:     cfg.Interface,
 		PID:           os.Getpid(),
 		Version:       version,
 	})

@@ -239,7 +239,7 @@ func (c *Conn) finishControlSetup(machineName string, first *protocol.Packet) er
 
 // Connect establishes a TCP connection, performs IV exchange and handshake.
 func Connect(addr, securityKey, machineName string, timeout time.Duration) (*Conn, error) {
-	raw, err := net.DialTimeout("tcp", addr, timeout)
+	raw, err := dial(addr, timeout)
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
 	}
@@ -461,7 +461,7 @@ func ListenAndAccept(port int, securityKey, machineName, allowedHost string, onF
 			"host", allowedHost, "err", resolveErr)
 	}
 
-	addr := fmt.Sprintf(":%d", port)
+	addr := listenAddr(port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("listen on %s: %w", addr, err)
@@ -798,7 +798,7 @@ func (c *Conn) Close() error {
 // The returned Conn is positioned for the caller to write the file header and
 // body; the caller owns closing it.
 func DialFile(addr, securityKey, machineName string, machineID uint32, timeout time.Duration) (*Conn, error) {
-	raw, err := net.DialTimeout("tcp", addr, timeout)
+	raw, err := dial(addr, timeout)
 	if err != nil {
 		return nil, fmt.Errorf("dial file channel: %w", err)
 	}

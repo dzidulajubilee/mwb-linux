@@ -34,7 +34,7 @@ func ListenFileChannel(port int, securityKey, machineName, allowedHost string, a
 			"host", allowedHost, "err", resolveErr)
 	}
 
-	addr := fmt.Sprintf(":%d", port)
+	addr := listenAddr(port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", addr, err)

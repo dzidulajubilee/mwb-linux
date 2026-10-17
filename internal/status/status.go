@@ -29,6 +29,13 @@ import (
 const (
 	StateConnecting = "connecting"
 	StateConnected  = "connected"
+	// StateNotConfigured: no config file yet. mwb waits for one and starts
+	// as soon as it is saved.
+	StateNotConfigured = "not_configured"
+	// StateConfigError: the config file cannot be used; Error says why.
+	StateConfigError = "config_error"
+	// StateNoNetwork: the configured interface has no address yet.
+	StateNoNetwork = "no_network"
 )
 
 // Status is the JSON document mwb-gui reads.
@@ -63,6 +70,10 @@ type Status struct {
 	PID      int            `json:"pid"`
 	Version  string         `json:"version"`
 	Since    time.Time      `json:"since"`
+	// Error explains StateConfigError and StateNoNetwork.
+	Error string `json:"error,omitempty"`
+	// Interface is the network interface mwb is restricted to, if any.
+	Interface string `json:"interface,omitempty"`
 }
 
 // Path returns the status file location, or "" when XDG_RUNTIME_DIR is unset.
@@ -149,6 +160,12 @@ func (w *Writer) Group(snap group.Snapshot) error {
 			s.Remote = ""
 		}
 	})
+}
+
+// Waiting records that mwb cannot start yet: state is StateNotConfigured,
+// StateConfigError or StateNoNetwork, and reason explains it.
+func (w *Writer) Waiting(state, reason string) error {
+	return w.write(func(s *Status) { s.State, s.Error = state, reason })
 }
 
 // Remove deletes the status file on clean shutdown. A crash leaves it behind;

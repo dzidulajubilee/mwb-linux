@@ -37,6 +37,7 @@ MANAGED: dict[str, type] = {
     "edge_changed": int,  # when edge was chosen, Unix seconds; mwb keeps two peers' sides mirrored
     "layout": list,  # Linux groups: machine names left to right; mwb keeps it in step across the group
     "layout_changed": int,  # when layout was chosen, Unix seconds
+    "interface": str,  # network interface to use, e.g. "wlp4s0"; "" = all
     "bidirectional": bool,
     "clipboard": bool,
     "file_transfer": bool,
@@ -53,6 +54,7 @@ DEFAULTS: dict[str, object] = {
     "edge_changed": 0,
     "layout": [],
     "layout_changed": 0,
+    "interface": "",
     "bidirectional": False,
     "clipboard": True,
     "file_transfer": True,

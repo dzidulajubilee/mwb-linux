@@ -30,6 +30,12 @@ type Config struct {
 	Layout        []string `toml:"layout"`
 	LayoutChanged int64    `toml:"layout_changed"`
 
+	// Interface names the network interface mwb uses, such as "wlp4s0":
+	// it listens only on that interface's address and connects out from it.
+	// Empty means every interface. A name rather than an address, so a new
+	// DHCP lease does not break it.
+	Interface string `toml:"interface"`
+
 	// FileTransfer controls the MWB file copy channel. nil = enabled.
 	FileTransfer *bool `toml:"file_transfer"`
 

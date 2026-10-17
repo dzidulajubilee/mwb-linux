@@ -221,6 +221,94 @@ def is_lan_address(ip: str) -> bool:
     return addr.version == 4 and any(addr in n for n in _LAN_V4)
 
 
+# --- network interfaces --------------------------------------------------------
+
+# Interfaces that only carry traffic for containers and VMs on this machine.
+_HIDDEN_PREFIXES = ("docker", "br-", "veth", "virbr", "vmnet", "vboxnet", "lxc", "lxd", "podman", "cni", "flannel")
+_VPN_PREFIXES = ("tun", "tap", "wg", "tailscale", "zt", "ppp", "nordlynx", "proton", "mullvad")
+
+
+@dataclass
+class Interface:
+    name: str
+    kind: str            # "Wi-Fi", "Ethernet", "VPN" or "Virtual"
+    up: bool
+    addresses: list[str]
+    hidden: bool = False  # container/VM bridges, not offered by default
+
+    @property
+    def address(self) -> str:
+        """The address another computer would use, as mwb picks it."""
+        return pick_address(self.addresses)
+
+    def label(self) -> str:
+        where = self.address or "not connected"
+        return f"{self.kind} · {self.name} · {where}"
+
+
+def pick_address(addresses: list[str]) -> str:
+    """Mirrors cmd/mwb pickInterfaceIP: private IPv4, any IPv4, global IPv6."""
+    parsed = []
+    for a in addresses:
+        try:
+            parsed.append(ipaddress.ip_address(a.split("%")[0]))
+        except ValueError:
+            continue
+    for want in (
+        lambda ip: ip.version == 4 and is_lan_address(str(ip)),
+        lambda ip: ip.version == 4 and not ip.is_loopback and not ip.is_link_local,
+        lambda ip: ip.version == 6 and ip.is_global,
+    ):
+        for ip in parsed:
+            if want(ip):
+                return str(ip)
+    return ""
+
+
+def _kind(name: str, sysfs: str) -> tuple[str, bool]:
+    if name.startswith(_HIDDEN_PREFIXES):
+        return "Virtual", True
+    if name.startswith(_VPN_PREFIXES):
+        return "VPN", False
+    if os.path.isdir(os.path.join(sysfs, name, "wireless")) or os.path.isdir(os.path.join(sysfs, name, "phy80211")):
+        return "Wi-Fi", False
+    if os.path.exists(os.path.join(sysfs, name, "device")):
+        return "Ethernet", False
+    return "Virtual", False
+
+
+def parse_ip_json(text: str, sysfs: str = "/sys/class/net") -> list[Interface]:
+    """Interfaces from `ip -j addr`, loopback left out."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return []
+    out = []
+    for entry in data if isinstance(data, list) else []:
+        name = str(entry.get("ifname") or "")
+        if not name or "LOOPBACK" in (entry.get("flags") or []):
+            continue
+        addrs = [str(a.get("local")) for a in entry.get("addr_info") or []
+                 if a.get("family") in ("inet", "inet6") and a.get("local")]
+        kind, hidden = _kind(name, sysfs)
+        up = entry.get("operstate") in ("UP", "UNKNOWN") and bool(addrs)
+        out.append(Interface(name=name, kind=kind, up=up, addresses=addrs, hidden=hidden))
+    order = {"Ethernet": 0, "Wi-Fi": 1, "VPN": 2, "Virtual": 3}
+    out.sort(key=lambda i: (not i.up, order.get(i.kind, 9), i.name))
+    return out
+
+
+def list_interfaces() -> list[Interface]:
+    exe = shutil.which("ip")
+    if not exe:
+        return []
+    try:
+        r = subprocess.run([exe, "-j", "addr"], capture_output=True, text=True, timeout=_TIMEOUT)
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    return parse_ip_json(r.stdout) if r.returncode == 0 else []
+
+
 # --- status file written by the client (internal/status) ---------------------
 
 def status_path() -> str:

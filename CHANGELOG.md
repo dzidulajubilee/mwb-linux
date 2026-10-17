@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `interface` setting and a **Network** choice in mwb-gui: listen and
+  connect on one network interface only (Wi-Fi, Ethernet, VPN), saved by
+  name. The window lists every interface with its address, and the
+  address it tells you to enter on the other computer follows the choice.
+  mwb waits while the chosen interface has no address.
+- First run: mwb-gui opens with a Linux peer, a new security key and
+  "wait for the other computer" filled in, so one Save starts listening.
 - Groups of up to six Linux machines (`peer = "linux"`), side by side in one
   row. Enter any one member's address; the machines share each other's
   addresses and connect to all of them. The pointer walks across every
@@ -37,6 +44,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it as well.
 
 ### Fixed
+- A fresh install with no `config.toml` made the service exit and restart
+  every 5 seconds. mwb now keeps running, reports "not set up" to the
+  settings window, and starts by itself as soon as the settings are saved.
+  A config it cannot use is reported the same way instead of crash-looping.
 - In a Linux group on Wayland the cursor never crossed from a machine: its
   edge windows were never re-armed after connecting.
 - A machine with an extended desktop (a laptop with a second monitor)
