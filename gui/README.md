@@ -33,6 +33,10 @@ Use `mwb-gui --config PATH` to edit a different file.
 - **First run.** With no `config.toml` yet, the form starts as a Linux peer
   with a generated key, waiting for the other computer. mwb runs in the
   background meanwhile and starts as soon as the settings are saved.
+- **Start over.** "Clear saved settings…" renames `config.toml` to
+  `config.toml.bak` (owner-only, it holds the key), forgets the learned
+  computers (`$XDG_STATE_HOME/mwb/members.json`), and restarts a running
+  service, which then waits for new settings.
 - **Background service.** Start, stop or restart the service, choose whether
   it starts at login, and read the recent log.
 - **Live status.** Read from `$XDG_RUNTIME_DIR/mwb/status.json`, which the

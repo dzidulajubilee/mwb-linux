@@ -84,7 +84,16 @@ sudo apt install ./mwb-linux_*_amd64.deb
 ```
 
 `apt` (rather than `dpkg -i`) also installs the dependencies, including GTK
-for the settings window. The package does several things on install:
+for the settings window.
+
+If apt prints `N: Download is performed unsandboxed as root as file ...
+couldn't be accessed by user '_apt'`, that is only a notice, and the
+install still works: apt's own user cannot read your home folder. Install
+from a folder it can read to avoid it:
+
+```bash
+cp mwb-linux_*_amd64.deb /tmp/ && sudo apt install /tmp/mwb-linux_*_amd64.deb
+``` The package does several things on install:
 
 - installs `mwb` and the `mwb-gui` settings window
 - adds the window to your app menu as **Mouse Without Borders**
@@ -322,6 +331,9 @@ PowerToys.
 - sharing switches
 - live connection status
 - start, stop and start-at-login for the service
+- **Clear saved settings…** to start over: it forgets the security key,
+  addresses, screen order and remembered computers, keeping a copy as
+  `config.toml.bak`
 - a tray icon: closing the window leaves it in the tray. Click the icon to
   open the window again; right-click it for the connection state, start or
   stop sharing, and **Quit**, which also stops mwb. It appears at login once

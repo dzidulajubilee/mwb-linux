@@ -164,6 +164,23 @@ class SaveTests(unittest.TestCase):
         self.assertIn("legacy_crypto = true\n", text)
         self.assertIn("# Get the security key from PowerToys", text)
 
+    def test_clear_keeps_a_private_backup_and_forgets_members(self):
+        d = tempfile.mkdtemp()
+        cfg = os.path.join(d, "config.toml")
+        members = os.path.join(d, "members.json")
+        with open(cfg, "w") as f:
+            f.write('key = "secret-key-123456"\n')
+        with open(members, "w") as f:
+            f.write("{}")
+        backup = cf.clear(cfg, members)
+        self.assertEqual(backup, cfg + ".bak")
+        self.assertFalse(os.path.exists(cfg))
+        self.assertFalse(os.path.exists(members))
+        self.assertEqual(os.stat(backup).st_mode & 0o777, 0o600)
+        with open(backup) as f:
+            self.assertIn("secret-key", f.read())
+        self.assertEqual(cf.clear(cfg, members), "")  # nothing left: no error
+
     def test_follows_symlink(self):
         real = os.path.join(self.dir, "real.toml")
         with open(real, "w", encoding="utf-8") as f:

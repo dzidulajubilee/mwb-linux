@@ -12,6 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   name. The window lists every interface with its address, and the
   address it tells you to enter on the other computer follows the choice.
   mwb waits while the chosen interface has no address.
+- **Clear saved settings…** in mwb-gui: forgets the security key,
+  addresses, screen order and remembered computers after a confirmation,
+  keeping the old file as `config.toml.bak`, so you can set up from scratch.
 - First run: mwb-gui opens with a Linux peer, a new security key and
   "wait for the other computer" filled in, so one Save starts listening.
 - Groups of up to six Linux machines (`peer = "linux"`), side by side in one

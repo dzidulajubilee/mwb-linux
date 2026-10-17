@@ -403,6 +403,33 @@ def save(updates: dict[str, object], path: str = DEFAULT_PATH) -> None:
         raise
 
 
+def members_path() -> str:
+    """Where mwb keeps the addresses of the other computers it learned
+    (internal/group StorePath)."""
+    state = os.environ.get("XDG_STATE_HOME") or ""
+    if not os.path.isabs(state):
+        state = os.path.join(os.path.expanduser("~"), ".local", "state")
+    return os.path.join(state, "mwb", "members.json")
+
+
+def clear(path: str = DEFAULT_PATH, members: str | None = None) -> str:
+    """Remove the saved settings: the config file is renamed to
+    config.toml.bak (replacing an older backup), and the remembered
+    computers are forgotten. Returns the backup path, or "" if there was no
+    config. Raises OSError."""
+    real = os.path.realpath(path)
+    backup = ""
+    if os.path.exists(real):
+        backup = real + ".bak"
+        os.replace(real, backup)
+        os.chmod(backup, 0o600)  # it still holds the security key
+    try:
+        os.unlink(members if members is not None else members_path())
+    except FileNotFoundError:
+        pass
+    return backup
+
+
 def validate(values: dict[str, object]) -> dict[str, str]:
     """Return {key: message} for values the client would reject or misuse."""
     problems: dict[str, str] = {}

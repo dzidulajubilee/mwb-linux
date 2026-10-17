@@ -596,6 +596,19 @@ class MainWindow(Gtk.ApplicationWindow):
         self.log_expander.set_child(log_scroll)
         self.log_expander.connect("notify::expanded", self._log_expanded)
         grid.attach(self.log_expander, 0, 2, 2, 1)
+
+        clear_row = Gtk.Box(spacing=12)
+        clear_text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True)
+        clear_text.append(Gtk.Label(label="Start over", xalign=0))
+        clear_text.append(_dim("Clears the security key, address, screen order and remembered computers. "
+                               "A copy is kept as config.toml.bak."))
+        clear_row.append(clear_text)
+        self.btn_clear = Gtk.Button(label="Clear saved settings…")
+        self.btn_clear.add_css_class("destructive-action")
+        self.btn_clear.set_valign(Gtk.Align.CENTER)
+        self.btn_clear.connect("clicked", self._confirm_clear)
+        clear_row.append(self.btn_clear)
+        grid.attach(clear_row, 0, 3, 2, 1)
         return box
 
     def _build_actions(self) -> Gtk.Widget:
@@ -941,7 +954,55 @@ class MainWindow(Gtk.ApplicationWindow):
         else:
             self.save_msg.set_text("Saved.")
 
-    def _service(self, action):
+    def _confirm_clear(self, *_):
+        title = "Clear the saved settings?"
+        body = ("This computer forgets its security key, the other computers’ addresses and the screen order, "
+                "and stops sharing until you set it up again. The old settings are kept as "
+                f"{os.path.basename(self.config_path)}.bak.")
+        if hasattr(Gtk, "AlertDialog"):  # GTK 4.10+
+            dialog = Gtk.AlertDialog(message=title, detail=body, buttons=["Cancel", "Clear settings"],
+                                     cancel_button=0, default_button=0)
+
+            def done(d, result):
+                try:
+                    if d.choose_finish(result) == 1:
+                        self._clear_settings()
+                except GLib.Error:
+                    pass  # dismissed
+
+            dialog.choose(self, None, done)
+            return
+        dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.WARNING,
+                                   buttons=Gtk.ButtonsType.NONE, text=title, secondary_text=body)
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        clear = dialog.add_button("Clear settings", Gtk.ResponseType.ACCEPT)
+        clear.add_css_class("destructive-action")
+        dialog.set_default_response(Gtk.ResponseType.CANCEL)
+
+        def respond(d, response):
+            d.destroy()
+            if response == Gtk.ResponseType.ACCEPT:
+                self._clear_settings()
+
+        dialog.connect("response", respond)
+        dialog.present()
+
+    def _clear_settings(self):
+        try:
+            backup = cf.clear(self.config_path)
+        except OSError as exc:
+            self.save_msg.set_text(f"Couldn’t clear the settings: {exc}")
+            return
+        self.reload()  # back to first-run setup
+        note = f" The old ones are in {backup}." if backup else ""
+        if self._unit.running:
+            # mwb keeps the old settings in memory until it restarts; it then
+            # waits for new ones.
+            self._service("restart", "Settings cleared; mwb is waiting for new ones." + note)
+        else:
+            self.save_msg.set_text("Settings cleared." + note)
+
+    def _service(self, action, done_msg: str | None = None):
         self.save_msg.set_text({"start": "Starting…", "stop": "Stopping…", "restart": "Restarting…"}.get(action, ""))
 
         def work():
@@ -952,7 +1013,7 @@ class MainWindow(Gtk.ApplicationWindow):
             if err:
                 self.save_msg.set_text(f"Couldn’t {action} the service: {err}")
             else:
-                self.save_msg.set_text({"start": "Started.", "stop": "Stopped.", "restart": "Restarted."}[action])
+                self.save_msg.set_text(done_msg or {"start": "Started.", "stop": "Stopped.", "restart": "Restarted."}[action])
                 self.btn_apply_restart.set_visible(False)
             self._poll()
             return False
