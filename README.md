@@ -488,6 +488,15 @@ same at the top. The usual one, right after installing:
 
 ### Clipboard not syncing
 
+On KDE Plasma (and Sway, Hyprland and other wlroots desktops) under
+Wayland, copies made in Wayland apps are read with `wl-paste`, because
+those desktops keep them from X11 apps. Install it if mwb's log says so:
+`sudo apt install wl-clipboard` (the .deb recommends it). GNOME needs
+nothing extra.
+
+Folders cannot be copied, as in PowerToys: copy a zip of the folder, or
+the files inside it.
+
 Ensure `xclip` is installed: `sudo apt install xclip`
 
 ### Disable clipboard sharing

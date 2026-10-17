@@ -47,6 +47,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it as well.
 
 ### Fixed
+- On KDE Plasma under Wayland, nothing copied in a Wayland app reached the
+  other computers: KDE copies the clipboard to X11 apps, which mwb read,
+  only while an X11 window has focus. mwb now asks the compositor whether
+  it offers a data-control protocol and then reads the clipboard with
+  `wl-paste` (the package recommends `wl-clipboard`). GNOME keeps using
+  X11, which it mirrors eagerly.
+- Copying a folder now says folders can't be copied (copy a zip instead)
+  rather than reporting an "unsafe file name".
 - A fresh install with no `config.toml` made the service exit and restart
   every 5 seconds. mwb now keeps running, reports "not set up" to the
   settings window, and starts by itself as soon as the settings are saved.

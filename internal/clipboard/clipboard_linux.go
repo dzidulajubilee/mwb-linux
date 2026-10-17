@@ -56,6 +56,7 @@ type Manager struct {
 	conn        *network.Conn
 	peers       func() []*network.Conn // group mode: every member online now
 	display     string
+	wayland     bool   // read with wl-paste: the native clipboard is not mirrored to X11
 	lastHash    string // hash of last clipboard content we sent
 	mu          sync.Mutex
 	recvBuf     bytes.Buffer // accumulates incoming clipboard chunks
@@ -128,6 +129,7 @@ func (m *Manager) Start() {
 	// A connection/restart is not a clipboard change. Baseline the selection
 	// already owned by Linux so it is not pushed to Windows as if the user had
 	// just copied it. Only changes observed after Start are transmitted.
+	m.wayland = useWaylandRead()
 	m.seedLocalClipboardHash()
 	m.wg.Add(1)
 	go func() {
@@ -544,6 +546,13 @@ func (m *Manager) handleImageClipboard(data []byte) {
 // getLocalClipboard reads the current clipboard text.
 // Times out after execTimeout to prevent blocking the poll goroutine indefinitely.
 func (m *Manager) getLocalClipboard() string {
+	if m.wayland {
+		out, err := wlPaste("text")
+		if err != nil {
+			return ""
+		}
+		return string(out)
+	}
 	for _, args := range [][]string{
 		{"xclip", "-selection", "clipboard", "-o"},
 		{"xsel", "--clipboard", "--output"},
@@ -582,20 +591,11 @@ func (m *Manager) setLocalClipboard(text string) {
 
 // getLocalImageClipboard checks if clipboard contains an image and returns it.
 func (m *Manager) getLocalImageClipboard() []byte {
-	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
-	cmd := exec.CommandContext(ctx, "xclip", "-selection", "clipboard", "-t", "TARGETS", "-o")
-	cmd.Env = append(os.Environ(), "DISPLAY="+m.display)
-	out, err := cmd.Output()
-	cancel()
+	out, err := m.readClipboard("TARGETS")
 	if err != nil || !strings.Contains(string(out), "image/png") {
 		return nil
 	}
-
-	ctx2, cancel2 := context.WithTimeout(context.Background(), execTimeout)
-	cmd2 := exec.CommandContext(ctx2, "xclip", "-selection", "clipboard", "-t", "image/png", "-o")
-	cmd2.Env = append(os.Environ(), "DISPLAY="+m.display)
-	imgData, err := cmd2.Output()
-	cancel2()
+	imgData, err := m.readClipboard("image/png")
 	if err != nil || len(imgData) == 0 {
 		return nil
 	}
@@ -630,6 +630,22 @@ func clipboardPackets(t protocol.PackageType, data []byte) []*protocol.Packet {
 	end := &protocol.Packet{Type: protocol.ClipboardDataEnd, Des: protocol.IDAll}
 	end.ClipboardData = make([]byte, dataSize)
 	return append(pkts, end)
+}
+
+// readClipboard returns the local clipboard's content of type target;
+// "TARGETS" lists the offered types, one per line.
+func (m *Manager) readClipboard(target string) ([]byte, error) {
+	if m.wayland {
+		if target == "TARGETS" {
+			return wlPaste("")
+		}
+		return wlPaste(target)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "xclip", "-selection", "clipboard", "-t", target, "-o")
+	cmd.Env = append(os.Environ(), "DISPLAY="+m.display)
+	return cmd.Output()
 }
 
 // encodeUTF16LE encodes a Go string to UTF-16LE bytes.
