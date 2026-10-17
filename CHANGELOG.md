@@ -7,6 +7,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Groups of up to six Linux machines (`peer = "linux"`), side by side in one
+  row. Enter any one member's address; the machines share each other's
+  addresses and connect to all of them. The pointer walks across every
+  screen, skipping offline machines, and any machine's keyboard and mouse
+  drive it. The screen order (`layout`) stays in sync, the most recent
+  choice winning, and mwb-gui shows every screen, lets you drag them into
+  order, and lists which machines are online. Two machines set up before
+  keep their `edge` until a layout is saved. Replaces the two-machine side
+  sync; every machine needs this version.
+- When a Linux machine's connection ends, keys and mouse buttons it was
+  holding down on this machine are released instead of staying stuck.
 - `mwb-gui` tray icon. Closing the window keeps it in the tray; clicking the
   icon opens the window again, and its right-click menu shows the connection
   state, starts or stops sharing, and quits, which also stops mwb. It starts

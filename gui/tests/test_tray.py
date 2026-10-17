@@ -22,6 +22,12 @@ class TrayStatusTests(unittest.TestCase):
         self.assertTrue(running)
         self.assertIn("desk", text)
 
+    def test_group_names_the_members(self):
+        st = {"state": "connected", "group": True, "members": [
+            {"name": "desk", "online": True, "current": True},
+            {"name": "mini", "online": True, "current": True}]}
+        self.assertEqual(tray.tray_status(st), ("Connected to desk and mini", True))
+
     def test_waiting_and_connecting(self):
         self.assertEqual(tray.tray_status({"state": "connecting", "waiting": True})[0],
                          "Waiting for the other computer")

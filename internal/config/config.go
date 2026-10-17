@@ -23,6 +23,13 @@ type Config struct {
 	EdgeChanged int64 `toml:"edge_changed"`
 	Clipboard   *bool `toml:"clipboard"` // nil = unset, treated as enabled
 
+	// Layout is the left-to-right order of the screens in a group of
+	// mwb-linux machines, by machine name; it replaces edge for peer =
+	// "linux". mwb keeps it in step across the group: the most recent change
+	// wins, and LayoutChanged (Unix seconds, 0 = unknown) is when it was made.
+	Layout        []string `toml:"layout"`
+	LayoutChanged int64    `toml:"layout_changed"`
+
 	// FileTransfer controls the MWB file copy channel. nil = enabled.
 	FileTransfer *bool `toml:"file_transfer"`
 

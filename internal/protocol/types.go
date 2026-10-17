@@ -29,7 +29,13 @@ const (
 	// mwb-linux (peer = "linux"), never to PowerToys. The value is unused in
 	// the PowerToys enum and below Matrix, so it is a plain 32-byte packet.
 	// See peerinfo.go.
-	LinuxPeerInfo  PackageType = 100
+	LinuxPeerInfo PackageType = 100
+	// LinuxGroup and LinuxCursor are the mwb-linux group extensions, sent
+	// only between mwb-linux machines: a chunk of a group document (layout and
+	// members) and where the shared cursor is. Plain 32-byte packets, like
+	// LinuxPeerInfo; older mwb-linux builds ignore them. See group.go.
+	LinuxGroup     PackageType = 101
+	LinuxCursor    PackageType = 102
 	NextMachine    PackageType = 121
 	Keyboard       PackageType = 122
 	Mouse          PackageType = 123

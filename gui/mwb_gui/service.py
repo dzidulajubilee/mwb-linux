@@ -306,3 +306,36 @@ def describe_connection(st: dict) -> tuple[str, str, str]:
         return "ok", title, f"{remote} can control this computer. {hint}"
     return ("wait", f"{title}, but neither computer shares its mouse",
             f"Turn on “{CONTROL_SWITCH}” on at least one of them. {hint if wanted_here else ''}".strip())
+
+
+def join_names(names: list[str]) -> str:
+    """'a', 'a and b', 'a, b and c'."""
+    names = [str(n) for n in names]
+    if len(names) <= 1:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def describe_group(st: dict) -> tuple[str, str, str]:
+    """(kind, title, detail) for a connected group of Linux computers."""
+    members = [m for m in (st.get("members") or []) if isinstance(m, dict) and m.get("name")]
+    online = [str(m["name"]) for m in members if m.get("online")]
+    offline = [str(m["name"]) for m in members if not m.get("online")]
+    older = [str(m["name"]) for m in members if m.get("online") and not m.get("current")]
+    title = f"Connected to {join_names(online)}" if online else "Looking for the other computers…"
+    kind = "ok" if online else "wait"
+    parts = []
+    if st.get("sharing"):
+        parts.append("Move the pointer past a highlighted edge to use another computer.")
+    else:
+        parts.append(f"This keyboard and mouse stay here; the others can still control this computer. "
+                     f"Turn on “{CONTROL_SWITCH}” to use them on the others.")
+    if offline:
+        verb = "is" if len(offline) == 1 else "are"
+        parts.append(f"{join_names(offline)} {verb} offline; the pointer skips "
+                     f"{'its screen' if len(offline) == 1 else 'their screens'}.")
+    if older:
+        kind = "error"
+        verb = "runs" if len(older) == 1 else "run"
+        parts.append(f"{join_names(older)} {verb} an older mwb that can’t join a group. Install this version there too.")
+    return kind, title, " ".join(parts)

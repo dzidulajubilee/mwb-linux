@@ -119,7 +119,8 @@ def tray_status(st: dict | None) -> tuple[str, bool]:
     if st is None:
         return "Not running", False
     if st.get("state") == "connected":
-        return service.describe_connection(st)[1], True
+        describe = service.describe_group if st.get("group") else service.describe_connection
+        return describe(st)[1], True
     if st.get("waiting"):
         return "Waiting for the other computer", True
     return f"Connecting to {st.get('host') or 'the other computer'}…", True

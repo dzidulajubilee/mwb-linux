@@ -45,6 +45,10 @@ PEER_HELP = {
 
 STATUS_POLL_SECONDS = 2
 
+# Arrangement keys for screens that have no machine name yet.
+ME = "\x00me"
+OTHER = "\x00other"
+
 
 def generate_key() -> str:
     return "".join(secrets.choice(KEY_ALPHABET) for _ in range(KEY_LENGTH))
@@ -80,31 +84,40 @@ def _rounded_rect(cr, x, y, w, h, r):
 
 
 class ArrangementView(Gtk.DrawingArea):
-    """Two screens side by side; click to swap them, or use the arrow keys.
+    """The screens in a row, left to right, as they stand on the desk.
 
-    The screens are drawn in their real proportions and touch along the edge
-    the cursor crosses, which is the one thing the user needs to get right.
+    With two screens a click swaps them. With more, drag a screen to its
+    place, or select one and move it with the Left and Right keys. Screens
+    are drawn in their real proportions and touch where the pointer crosses.
     """
 
-    def __init__(self, on_edge_changed):
+    DRAG_THRESHOLD = 6
+
+    def __init__(self, on_changed):
         super().__init__()
-        self.edge = "left"
-        self.local_name = ""
-        self.remote_name = ""
-        self.remote_kind = "Windows PC"
-        self.local_aspect = 16 / 9
-        self.remote_aspect = 16 / 9
+        self.order: list[str] = [ME, OTHER]
+        self.me = ME
+        self.titles: dict[str, str] = {}
+        self.kinds: dict[str, str] = {}
+        self.aspects: dict[str, float] = {}
+        self.offline: set[str] = set()
+        self.location = ""
         self.connected = False
-        self._on_edge_changed = on_edge_changed
+        self._on_changed = on_changed
+        self._selected = ME
+        self._drag = None  # (index, start_x, current_dx) while dragging
+        self._rects: list[tuple[str, float, float]] = []  # (name, x, w) as last drawn
 
         self.set_content_height(176)
         self.set_hexpand(True)
         self.set_focusable(True)
         self.set_draw_func(self._draw)
 
-        click = Gtk.GestureClick()
-        click.connect("pressed", self._clicked)
-        self.add_controller(click)
+        drag = Gtk.GestureDrag()
+        drag.connect("drag-begin", self._drag_begin)
+        drag.connect("drag-update", self._drag_update)
+        drag.connect("drag-end", self._drag_end)
+        self.add_controller(drag)
         keys = Gtk.EventControllerKey()
         keys.connect("key-pressed", self._key)
         self.add_controller(keys)
@@ -114,42 +127,110 @@ class ArrangementView(Gtk.DrawingArea):
         self.add_controller(focus)
         self._update_accessible()
 
-    def set_edge(self, edge: str, notify: bool = False):
-        if edge not in ("left", "right") or edge == self.edge:
+    # --- state -------------------------------------------------------------
+
+    def set_order(self, order: list[str], me: str):
+        order = list(order) or [me]
+        if me not in order:
+            order.append(me)
+        if order == self.order and me == self.me:
             return
-        self.edge = edge
-        self._update_accessible()
-        self.queue_draw()
-        if notify:
-            self._on_edge_changed(edge)
+        self.order, self.me = order, me
+        if self._selected not in order:
+            self._selected = me
+        self.refresh()
+
+    def title(self, name: str) -> str:
+        if self.titles.get(name):
+            return self.titles[name]
+        if name in (ME, OTHER):
+            return "This computer" if name == self.me else "Other computer"
+        return name
 
     def refresh(self):
         self._update_accessible()
         self.queue_draw()
 
     def _update_accessible(self):
-        text = f"Screen arrangement: the other computer is on the {self.edge}. Press Left or Right to move it."
-        self.set_tooltip_text("Click to swap the two screens")
+        names = [self.title(n) + (" (this computer)" if n == self.me else "") for n in self.order]
+        text = "Screens from left to right: " + ", ".join(names) + "."
+        if len(self.order) == 2:
+            self.set_tooltip_text("Click to swap the two screens")
+            text += " Press Left or Right to move this computer."
+        else:
+            self.set_tooltip_text("Drag a screen to move it")
+            text += " Press Left or Right to move the selected screen."
         try:
             self.update_property([Gtk.AccessibleProperty.LABEL], [text])
         except (AttributeError, TypeError):
             pass
 
-    def _clicked(self, _gesture, _n, _x, _y):
-        # Swap rather than "move the other computer to the clicked half": with
-        # the halves fully covered by the two screens, clicking this computer
-        # to say "I am here" used to put the other computer there instead.
+    def _move(self, name: str, to: int):
+        i = self.order.index(name)
+        to = max(0, min(len(self.order) - 1, to))
+        if to == i:
+            return
+        order = list(self.order)
+        order.insert(to, order.pop(i))
+        self.order = order
+        self.refresh()
+        self._on_changed(order)
+
+    # --- input -------------------------------------------------------------
+
+    def _index_at(self, x: float) -> int:
+        for i, (_n, sx, w) in enumerate(self._rects):
+            if sx <= x < sx + w:
+                return i
+        return -1
+
+    def _drag_begin(self, _g, x, _y):
         self.grab_focus()
-        self.set_edge("right" if self.edge == "left" else "left", notify=True)
+        i = self._index_at(x)
+        self._drag = (i, x, 0.0) if i >= 0 else None
+
+    def _drag_update(self, _g, dx, _dy):
+        if self._drag is not None and len(self.order) > 2:
+            i, x0, _ = self._drag
+            self._drag = (i, x0, dx)
+            self.queue_draw()
+
+    def _drag_end(self, _g, dx, _dy):
+        drag, self._drag = self._drag, None
+        if drag is None:
+            self.queue_draw()
+            return
+        i, x0, _ = drag
+        name = self.order[i]
+        if abs(dx) < self.DRAG_THRESHOLD:
+            # A click: swap two screens, or select one of several.
+            if len(self.order) == 2:
+                self._move(name, 1 - i)
+            else:
+                self._selected = name
+                self.queue_draw()
+            return
+        if len(self.order) > 2:
+            self._move(name, self._slot_for(x0 + dx))
+
+    def _slot_for(self, x: float) -> int:
+        """The position a screen dropped at x takes."""
+        for j, (_n, sx, w) in enumerate(self._rects):
+            if x < sx + w / 2:
+                return j
+        return len(self._rects) - 1
 
     def _key(self, _ctl, keyval, _code, _state):
+        name = self.me if len(self.order) == 2 else self._selected
         if keyval in (Gdk.KEY_Left, Gdk.KEY_KP_Left):
-            self.set_edge("left", notify=True)
+            self._move(name, self.order.index(name) - 1)
             return True
         if keyval in (Gdk.KEY_Right, Gdk.KEY_KP_Right):
-            self.set_edge("right", notify=True)
+            self._move(name, self.order.index(name) + 1)
             return True
         return False
+
+    # --- drawing -----------------------------------------------------------
 
     def _text(self, cr, text, x, y, fg, alpha, bold=False, align_center=True, max_w=None):
         layout = PangoCairo.create_layout(cr)
@@ -159,7 +240,7 @@ class ArrangementView(Gtk.DrawingArea):
         layout.set_font_description(desc)
         layout.set_text(text, -1)
         if max_w:
-            layout.set_width(int(max_w * Pango.SCALE))
+            layout.set_width(int(max(1, max_w) * Pango.SCALE))
             layout.set_ellipsize(Pango.EllipsizeMode.END)
             layout.set_alignment(Pango.Alignment.CENTER)
         w, h = layout.get_pixel_size()
@@ -176,54 +257,83 @@ class ArrangementView(Gtk.DrawingArea):
         fg, accent = _theme_colors(self)
         label_h = 44
         max_h = height - label_h - 16
-        # Same height for both, widths from each screen's aspect ratio.
-        lh = rh = max_h
-        lw = lh * self.local_aspect
-        rw = rh * self.remote_aspect
-        scale = min(1.0, (width - 32) / (lw + rw))
-        lw, lh, rw, rh = lw * scale, lh * scale, rw * scale, rh * scale
-        total = lw + rw
-        x0 = (width - total) / 2
+        widths = [max_h * self.aspects.get(n, 16 / 9) for n in self.order]
+        scale = min(1.0, (width - 32) / max(1, sum(widths)))
+        hgt = max_h * scale
+        widths = [w * scale for w in widths]
+        x0 = (width - sum(widths)) / 2
         top = 8
-        # Bottom-align the screens, like monitors standing on a desk.
-        base = top + max(lh, rh)
+        base = top + hgt  # bottom-aligned, like monitors standing on a desk
 
-        if self.edge == "left":
-            remote_x, local_x = x0, x0 + rw
-            seam_x = local_x
-        else:
-            local_x, remote_x = x0, x0 + lw
-            seam_x = remote_x
+        self._rects = []
+        x = x0
+        for n, w in zip(self.order, widths):
+            self._rects.append((n, x, w))
+            x += w
 
-        def screen(x, w, h, fill, fill_a, stroke, stroke_a):
-            _rounded_rect(cr, x + 1, base - h, w - 2, h, 8)
-            cr.set_source_rgba(fill.red, fill.green, fill.blue, fill_a)
+        # While dragging, draw the others where they would end up.
+        drawn = list(self._rects)
+        dragging = None
+        if self._drag is not None and len(self.order) > 2:
+            i, x0d, dx = self._drag
+            name = self.order[i]
+            slot = self._slot_for(x0d + dx)
+            preview = [n for n in self.order if n != name]
+            preview.insert(slot, name)
+            pw = {n: w for n, _x, w in self._rects}
+            drawn, x = [], x0
+            for n in preview:
+                drawn.append((n, x, pw[n]))
+                x += pw[n]
+            # Follow the pointer, but stay inside the picture.
+            dragging = (name, max(0.0, min(width - pw[name], self._rects[i][1] + dx)), pw[name])
+
+        def screen(name, sx, w, lifted=False):
+            local = name == self.me
+            away = name in self.offline
+            _rounded_rect(cr, sx + 1, base - hgt, w - 2, hgt, 8)
+            fill, stroke = (accent, accent) if local else (fg, fg)
+            cr.set_source_rgba(fill.red, fill.green, fill.blue, 0.16 if local else (0.02 if away else 0.05))
             cr.fill_preserve()
-            cr.set_source_rgba(stroke.red, stroke.green, stroke.blue, stroke_a)
-            cr.set_line_width(1.5)
+            cr.set_source_rgba(stroke.red, stroke.green, stroke.blue,
+                               0.9 if local or lifted else (0.2 if away else 0.35))
+            cr.set_line_width(2.5 if name == self._selected and len(self.order) > 2 and self.has_focus() else 1.5)
+            if away:
+                cr.set_dash([5, 4])
             cr.stroke()
+            cr.set_dash([])
+            ty = base + 6
+            label_w = max(8, w - 8)
+            self._text(cr, self.title(name), sx + w / 2, ty, fg, 0.95 if not away else 0.6,
+                       bold=True, max_w=label_w)
+            sub = "This computer" if local else ("Offline" if away else self.kinds.get(name, "Linux computer"))
+            if name == self.location and self.connected:
+                sub = "Pointer is here" if not local else "This computer · pointer here"
+            self._text(cr, sub, sx + w / 2, ty + 20, fg, 0.6, max_w=label_w)
 
-        screen(remote_x, rw, rh, fg, 0.05, fg, 0.35)
-        screen(local_x, lw, lh, accent, 0.16, accent, 0.9)
+        for name, sx, w in drawn:
+            if dragging is None or name != dragging[0]:
+                screen(name, sx, w)
 
-        # The shared edge: where the cursor crosses.
-        seam_h = min(lh, rh)
-        cr.set_source_rgba(accent.red, accent.green, accent.blue, 1.0)
-        cr.set_line_width(4)
-        cr.set_line_cap(1)  # round
-        cr.move_to(seam_x, base - seam_h + 10)
-        cr.line_to(seam_x, base - 10)
-        cr.stroke()
-        if self.connected:
-            # A small filled marker on the seam shows the link is live.
-            cr.arc(seam_x, base - seam_h / 2, 6, 0, 2 * math.pi)
-            cr.fill()
+        # The seams: where the pointer crosses between neighbours.
+        for (a, ax, aw), (b, _bx, _bw) in zip(drawn, drawn[1:]):
+            seam_x = ax + aw
+            touches_me = self.me in (a, b)
+            live = a not in self.offline and b not in self.offline
+            cr.set_source_rgba(accent.red, accent.green, accent.blue, 1.0 if touches_me else 0.45)
+            cr.set_line_width(4 if touches_me else 3)
+            cr.set_line_cap(1)  # round
+            cr.move_to(seam_x, base - hgt + 10)
+            cr.line_to(seam_x, base - 10)
+            cr.stroke()
+            if self.connected and live:
+                # A small filled marker on the seam shows the link is live.
+                cr.arc(seam_x, base - hgt / 2, 6 if touches_me else 4, 0, 2 * math.pi)
+                cr.fill()
 
-        ty = base + 6
-        self._text(cr, self.local_name or "This computer", local_x + lw / 2, ty, fg, 0.95, bold=True, max_w=lw - 8)
-        self._text(cr, "This computer", local_x + lw / 2, ty + 20, fg, 0.6, max_w=lw - 8)
-        self._text(cr, self.remote_name or "Other computer", remote_x + rw / 2, ty, fg, 0.95, bold=True, max_w=rw - 8)
-        self._text(cr, self.remote_kind, remote_x + rw / 2, ty + 20, fg, 0.6, max_w=rw - 8)
+        if dragging is not None:
+            name, sx, w = dragging
+            screen(name, sx, w, lifted=True)
 
         if self.has_focus():
             _rounded_rect(cr, 2, 2, width - 4, height - 4, 10)
@@ -299,6 +409,10 @@ class MainWindow(Gtk.ApplicationWindow):
         self._poll_busy = False
         self._connected_remote = ""
         self._peer_screen = None  # (w, h) a connected Linux peer reported
+        self._edge = "left"  # the two-machine side: where the other computer is
+        self._layout_order: list[str] = []  # the screen order as the user arranged it
+        self._layout_dirty = False
+        self._group: dict | None = None  # a running group's layout, members and pointer
         self._status_addresses: list[str] = []  # this machine's, as mwb reported them
 
         scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
@@ -312,7 +426,7 @@ class MainWindow(Gtk.ApplicationWindow):
         outer.append(page)
 
         page.append(self._build_status())
-        self.arrangement = ArrangementView(self._edge_changed)
+        self.arrangement = ArrangementView(self._arrangement_changed)
         arr_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         arr_box.append(self.arrangement)
         self.arrangement_hint = _dim("")
@@ -524,7 +638,8 @@ class MainWindow(Gtk.ApplicationWindow):
             self.bidi.set_active(bool(values["bidirectional"]))
             self.clip.set_active(bool(values["clipboard"]))
             self.files.set_active(bool(values["file_transfer"]))
-            self.arrangement.set_edge(str(values["edge"]))
+            self._edge = str(values["edge"])
+            self._layout_order, self._layout_dirty = [], False
             self.btn_apply_restart.set_visible(False)
         finally:
             self._loading = False
@@ -536,7 +651,8 @@ class MainWindow(Gtk.ApplicationWindow):
             "host": self.host.get_text().strip(),
             "key": self.key.get_text(),
             "name": self.name.get_text().strip(),
-            "edge": self.arrangement.edge,
+            "edge": self._edge,
+            "layout": list(self._layout_order) if self._layout_dirty else list(self._loaded.get("layout") or []),
             "bidirectional": self.bidi.get_active(),
             "clipboard": self.clip.get_active(),
             "file_transfer": self.files.get_active(),
@@ -549,14 +665,80 @@ class MainWindow(Gtk.ApplicationWindow):
         edit someone made to another key in the file meanwhile."""
         return {k: v for k, v in self.form_values().items() if self._loaded.get(k) != v}
 
-    def _edge_changed(self, _edge):
-        self._update_arrangement_hint()
+    def _arrangement_changed(self, order: list[str]):
+        if OTHER in order or ME in order:
+            # Two machines without names in a layout yet: the side changed.
+            me = self.arrangement.me
+            self._edge = "left" if order.index(me) == 1 else "right"
+        else:
+            self._layout_order, self._layout_dirty = list(order), True
         self._changed()
 
+    def _me_name(self, v: dict) -> str:
+        return str(v["name"] or socket.gethostname()[: cf.NAME_MAX])
+
+    def _display_layout(self, me: str) -> list[str]:
+        """The screen order to show for a Linux computer: the user's edit, the
+        running group's, the saved one, or the two-machine side."""
+        if self._layout_dirty and self._layout_order:
+            return self._layout_order
+        live = [str(n) for n in ((self._group or {}).get("layout") or [])]
+        if len(live) >= 2 and me in live:
+            return live
+        saved = [str(n) for n in (self._loaded.get("layout") or [])]
+        if len(saved) >= 2 and me in saved:
+            return saved
+        other = OTHER
+        members = (self._group or {}).get("members") or []
+        if len(members) == 1 and members[0].get("name"):
+            other = str(members[0]["name"])
+        return [other, me] if self._edge == "left" else [me, other]
+
+    def _sync_arrangement(self, v: dict):
+        a = self.arrangement
+        me = self._me_name(v)
+        local_aspect = self._local_aspect()
+        other_title = self._connected_remote or str(v["host"]) or "Other computer"
+        if self._peer_screen:
+            pw, ph = self._peer_screen
+            other_aspect = pw / ph
+        elif v["remote_height"]:
+            other_aspect = int(v["remote_width"]) / int(v["remote_height"])
+        else:
+            other_aspect = 16 / 9
+        if v["peer"] != "linux":
+            a.titles = {ME: me, OTHER: other_title}
+            a.kinds = {OTHER: "Windows PC"}
+            a.aspects = {ME: local_aspect, OTHER: other_aspect}
+            a.offline, a.location = set(), ""
+            a.set_order([OTHER, ME] if self._edge == "left" else [ME, OTHER], ME)
+        else:
+            a.titles = {me: me, OTHER: other_title}
+            a.kinds = {}
+            a.aspects = {me: local_aspect, OTHER: other_aspect}
+            a.offline = set()
+            for m in (self._group or {}).get("members") or []:
+                name = str(m.get("name") or "")
+                if m.get("width") and m.get("height"):
+                    a.aspects[name] = int(m["width"]) / int(m["height"])
+                if not m.get("online"):
+                    a.offline.add(name)
+            a.location = str((self._group or {}).get("location") or "")
+            a.set_order(self._display_layout(me), me)
+        a.refresh()
+        self._update_arrangement_hint()
+
     def _update_arrangement_hint(self):
-        other = self.arrangement.remote_name or "The other computer"
+        a = self.arrangement
+        if len(a.order) > 2:
+            self.arrangement_hint.set_text(
+                "The screens from left to right, as they stand on your desk. Drag a screen to move it; "
+                "the pointer crosses where screens touch. Offline computers are skipped.")
+            return
+        other = next((a.title(n) for n in a.order if n != a.me), "The other computer")
+        side = "left" if a.order and a.order[0] != a.me else "right"
         self.arrangement_hint.set_text(
-            f"{other} is to the {self.arrangement.edge} of this computer. "
+            f"{other} is to the {side} of this computer. "
             "Click the screens to swap them. The highlighted edge is where the pointer crosses.")
 
     def _bidi_toggled(self, *_):
@@ -583,23 +765,13 @@ class MainWindow(Gtk.ApplicationWindow):
         v = self.form_values()
         peer = str(v["peer"])
         self.peer_hint.set_text(PEER_HELP[peer])
-        self.arrangement.local_name = v["name"] or socket.gethostname()[: cf.NAME_MAX]
-        # Once connected, the peer's own name is friendlier than its address.
-        self.arrangement.remote_name = self._connected_remote or v["host"]
-        self._update_arrangement_hint()
-        self.arrangement.remote_kind = "Linux computer" if peer == "linux" else "Windows PC"
         if self._peer_screen:
-            # The peer measured its own screen; mwb uses that, so draw it.
             pw, ph = self._peer_screen
-            self.arrangement.remote_aspect = pw / ph
             self.size_hint.set_text(f"{self._connected_remote or 'The other computer'} reports {pw} × {ph}. "
                                     "mwb uses that automatically; this value is only a fallback.")
         else:
-            if v["remote_height"]:
-                self.arrangement.remote_aspect = int(v["remote_width"]) / int(v["remote_height"])
             self.size_hint.set_text("Used to place the pointer on the other screen.")
-        self.arrangement.local_aspect = self._local_aspect()
-        self.arrangement.refresh()
+        self._sync_arrangement(v)
         self.files.set_sensitive(bool(v["clipboard"]))
         self.files_sub.set_text(
             "Copy one file, then paste it on the other computer. Up to 100 MB."
@@ -687,9 +859,11 @@ class MainWindow(Gtk.ApplicationWindow):
         if not updates.get("name", True):
             updates.pop("name")  # empty means "use the hostname"; don't write ""
         if "edge" in updates:
-            # With a Linux peer, the most recently chosen side wins and the
-            # other computer saves the mirror of it.
             updates["edge_changed"] = int(time.time())
+        if "layout" in updates:
+            # In a group the most recently chosen order wins, and mwb copies
+            # it to the other computers.
+            updates["layout_changed"] = int(time.time())
         try:
             cf.save(updates, self.config_path)
         except (cf.ConfigError, OSError) as exc:
@@ -767,7 +941,10 @@ class MainWindow(Gtk.ApplicationWindow):
         self._poll_busy = False
         self._unit = unit
         connected = False
-        if st and st.get("state") == "connected":
+        if st and st.get("state") == "connected" and st.get("group"):
+            kind, title, detail = service.describe_group(st)
+            connected = True
+        elif st and st.get("state") == "connected":
             kind, title, detail = service.describe_connection(st)
             connected = True
         elif st and st.get("state") == "connecting" and st.get("waiting"):
@@ -806,12 +983,19 @@ class MainWindow(Gtk.ApplicationWindow):
         remote = str(st.get("remote") or "") if connected and st else ""
         pw = int(st.get("peer_screen_width") or 0) if connected and st else 0
         ph = int(st.get("peer_screen_height") or 0) if connected and st else 0
+        group = None
+        if st and st.get("group"):
+            group = {k: st.get(k) for k in ("layout", "members", "location")}
+            online = [m for m in (st.get("members") or []) if m.get("online")]
+            if len(online) == 1 and online[0].get("width") and online[0].get("height"):
+                pw, ph = int(online[0]["width"]), int(online[0]["height"])
         peer_screen = (pw, ph) if pw > 0 and ph > 0 else None
         if (self.arrangement.connected != connected or self._connected_remote != remote
-                or self._peer_screen != peer_screen):
+                or self._peer_screen != peer_screen or self._group != group):
             self.arrangement.connected = connected
             self._connected_remote = remote
             self._peer_screen = peer_screen
+            self._group = group
             self._changed()  # redraws the arrangement and the size hint
 
         # mwb saved the mirror of a side chosen more recently on the peer.

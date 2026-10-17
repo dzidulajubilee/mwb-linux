@@ -132,17 +132,6 @@ func main() {
 	if *edgeSide == "" {
 		*edgeSide = "right" // final fallback
 	}
-	// With a Linux peer, a side clash resolves itself: the older choice
-	// adopts the mirror of the newer one and saves it. A side forced with
-	// -edge stays as given.
-	edgeChanged := cfg.EdgeChanged
-	sides := sideSync{edge: edgeSide, changed: &edgeChanged, name: cfg.Name}
-	if !flagWasSet("edge") {
-		sides.save = func(edge string, changed int64) error {
-			return config.SaveEdge(*configPath, edge, changed)
-		}
-	}
-
 	// bidirectional = true in config enables it for the service; an explicit
 	// -bidi or -bidi=false on the command line still wins.
 	if !flagWasSet("bidi") {
@@ -251,6 +240,12 @@ func main() {
 	// key-authenticated connection from the local network instead.
 	waiting := cfg.WaitsForPeer()
 	allowedHost := cfg.Host
+	if linuxPeer {
+		// A group member's address may name its port; inbound checks the host.
+		if h, _, err := net.SplitHostPort(cfg.Host); err == nil {
+			allowedHost = h
+		}
+	}
 	if waiting {
 		allowedHost = network.AcceptLocalNetwork
 		slog.Info("waiting for the other computer to connect; enter one of these addresses there",
@@ -272,6 +267,28 @@ func main() {
 		if err := network.ListenFileChannel(cfg.ClipboardPort(), cfg.Key, cfg.Name, allowedHost, activeMachineID.Load, onFile, serverStop); err != nil {
 			slog.Error("inbound file transfers disabled", "port", cfg.ClipboardPort(), "err", err)
 		}
+	}
+
+	if linuxPeer {
+		// Linux machines form a group, of two or up to six.
+		go runGroup(groupSetup{
+			cfg:            cfg,
+			configPath:     *configPath,
+			saveLayout:     true,
+			incoming:       incomingCh,
+			mouse:          mouse,
+			keyboard:       keyboard,
+			keyboardLayout: keyboardLayout,
+			sharing:        *bidirectional,
+			clipboard:      clipboardEnabled,
+			status:         statusFile,
+			onClipboard:    func(m *clipboard.Manager) { activeClip.Store(m) },
+			activeID:       &activeMachineID,
+		}, serverStop)
+		sig := <-sigCh
+		slog.Info("shutting down", "signal", sig)
+		statusFile.Remove()
+		return
 	}
 
 	go func() {
@@ -299,28 +316,12 @@ func main() {
 			// Wait for either outbound or inbound connection
 			var conn *network.Conn
 			var outbound bool
-			if linuxPeer {
-				// Two mwb-linux peers must agree on one of the two sockets;
-				// see network.SelectLinuxPeer.
-				conn, outbound = network.SelectLinuxPeer(outgoingCh, incomingCh, network.LinuxPeerGrace)
-				if conn == nil {
-					// Only reachable if the listener has shut down. Exit
-					// non-zero rather than idle, so systemd restarts us.
-					close(connectStop)
-					slog.Error("no connection source left; exiting so the service restarts")
-					statusFile.Remove()
-					os.Exit(1)
-				}
-				conn.SetIdleTimeout(network.LinuxPeerIdleTimeout)
-				slog.Info("connected (linux peer)", "remote", conn.RemoteName, "outbound", outbound)
-			} else {
-				select {
-				case conn = <-outgoingCh:
-					outbound = true
-					slog.Info("connected (outbound)", "remote", conn.RemoteName)
-				case conn = <-incomingCh:
-					slog.Info("connected (inbound)", "remote", conn.RemoteName)
-				}
+			select {
+			case conn = <-outgoingCh:
+				outbound = true
+				slog.Info("connected (outbound)", "remote", conn.RemoteName)
+			case conn = <-incomingCh:
+				slog.Info("connected (inbound)", "remote", conn.RemoteName)
 			}
 			close(connectStop)
 			if err := statusFile.Connected(conn.RemoteName, outbound); err != nil {
@@ -330,8 +331,6 @@ func main() {
 			handler.OnBecameActive = nil
 			handler.OnActivated = nil
 			handler.OnReclaimed = nil
-			handler.OnHideMouse = nil
-			handler.OnPeerInfo = nil
 
 			// Start clipboard sharing on the auto-detected display unless disabled.
 			var clipMgr *clipboard.Manager
@@ -396,17 +395,6 @@ func main() {
 				handler.OnActivated = func() { cap.SetActive(true) }
 				handler.OnReclaimed = func() { cap.SetActive(true) }
 
-				if linuxPeer {
-					cap.SetLinuxPeer(true)
-					// The far-edge guard exists for PowerToys machine matrices.
-					// A Linux peer sends MachineSwitched only when its cursor
-					// crosses its own configured edge, and this side's virtual
-					// cursor cannot know where the peer's cursor is, so the
-					// guard would reject every legitimate arrival.
-					handler.ShouldActivate = nil
-					handler.OnHideMouse = cap.YieldToPeer
-				}
-
 				if err := cap.Run(); err != nil {
 					slog.Error("capture start failed", "err", err)
 				} else {
@@ -417,12 +405,6 @@ func main() {
 			if err := statusFile.LocalSharing(sharing); err != nil {
 				slog.Debug("status file not updated", "err", err)
 			}
-			if linuxPeer {
-				// Tell the peer our screen, side and sharing mode, and take
-				// its own, so neither user types the other's settings.
-				exchangePeerInfo(conn, handler, cap, sides, sharing, statusFile)
-			}
-
 			if err := network.ReceiveLoop(conn, handler); err != nil {
 				slog.Error("receive loop error", "err", err)
 			}

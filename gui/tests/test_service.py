@@ -163,5 +163,31 @@ class DescribeConnectionTests(unittest.TestCase):
         self.assertIn("swap them on beta-pc", detail)
 
 
+class GroupDescriptionTests(unittest.TestCase):
+    def test_join_names(self):
+        self.assertEqual(service.join_names([]), "")
+        self.assertEqual(service.join_names(["a"]), "a")
+        self.assertEqual(service.join_names(["a", "b"]), "a and b")
+        self.assertEqual(service.join_names(["a", "b", "c"]), "a, b and c")
+
+    def test_names_online_and_offline_machines(self):
+        st = {"state": "connected", "group": True, "sharing": True, "members": [
+            {"name": "desk", "online": True, "current": True},
+            {"name": "tv", "online": False, "current": False},
+            {"name": "mini", "online": True, "current": True},
+        ]}
+        kind, title, detail = service.describe_group(st)
+        self.assertEqual((kind, title), ("ok", "Connected to desk and mini"))
+        self.assertIn("tv is offline", detail)
+        self.assertIn("highlighted edge", detail)
+
+    def test_older_member_is_an_error(self):
+        st = {"group": True, "members": [{"name": "old", "online": True, "current": False}]}
+        kind, _, detail = service.describe_group(st)
+        self.assertEqual(kind, "error")
+        self.assertIn("old runs an older mwb", detail)
+        self.assertIn("stay here", detail)
+
+
 if __name__ == "__main__":
     unittest.main()

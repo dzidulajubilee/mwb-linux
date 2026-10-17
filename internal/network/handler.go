@@ -57,6 +57,9 @@ type Handler struct {
 	// OnPeerInfo optionally receives a Linux peer's settings (LinuxPeerInfo).
 	// Only wired for peer = "linux"; nil ignores the packet.
 	OnPeerInfo func(protocol.PeerInfo)
+	// OnGroup optionally receives the mwb-linux group packets (LinuxGroup
+	// and LinuxCursor). Only wired for peer = "linux"; nil ignores them.
+	OnGroup func(*protocol.Packet)
 	// KeyboardLayout selects the inbound Windows VK -> Linux evdev mapping.
 	KeyboardLayout  string
 	pendingCtrl     bool
@@ -88,7 +91,7 @@ func (h *Handler) HandlePacket(pkt *protocol.Packet) {
 		slog.Info("MachineSwitched: cursor switched to us", "src", pkt.Src)
 		now := time.Now()
 		h.ActivatedAt = &now
-		h.inSeeded = false // reseed inbound tracker so the entry move snaps, not scales
+		h.Reseed()
 		if h.OnBecameActive != nil {
 			h.OnBecameActive()
 		}
@@ -130,11 +133,22 @@ func (h *Handler) HandlePacket(pkt *protocol.Packet) {
 		if h.OnPeerInfo != nil {
 			h.OnPeerInfo(info)
 		}
+	case protocol.LinuxGroup, protocol.LinuxCursor:
+		if h.OnGroup != nil {
+			h.OnGroup(pkt)
+		}
 	case protocol.Hello, protocol.Awake, protocol.HandshakeAck:
 		// expected control packets — ignore silently
 	default:
 		slog.Debug("unhandled packet type", "type", pkt.Type)
 	}
+}
+
+// Reseed makes the next inbound move snap to the reported position instead of
+// scaling from the last one: the cursor just arrived, so there is no motion
+// to continue.
+func (h *Handler) Reseed() {
+	h.inSeeded = false // reseed inbound tracker so the entry move snaps, not scales
 }
 
 func (h *Handler) handleMouse(pkt *protocol.Packet) {

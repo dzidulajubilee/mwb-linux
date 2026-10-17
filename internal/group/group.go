@@ -1,0 +1,750 @@
+package group
+
+import (
+	"log/slog"
+	"maps"
+	"net"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/lucky-verma/mwb-linux/internal/network"
+	"github.com/lucky-verma/mwb-linux/internal/protocol"
+)
+
+const (
+	dialTimeout    = 10 * time.Second
+	redialDelay    = 2 * time.Second
+	bootstrapIdle  = 5 * time.Second
+	defaultWidth   = 1920
+	defaultHeight  = 1080
+	incomingBuffer = 2
+)
+
+// Target is a machine the cursor can move to.
+type Target struct {
+	Name          string
+	Conn          *network.Conn
+	Width, Height int32
+}
+
+// CursorFollower applies cursor moves that other machines announce. The
+// capturer implements it; a machine that does not share its input has none.
+type CursorFollower interface {
+	// Arrive: the cursor is now on this machine, entering from side at
+	// height y (0-65535).
+	Arrive(side string, y int32)
+	// Follow: the cursor is now on t, entering from side at height y. Local
+	// input goes there until it moves again.
+	Follow(t Target, side string, y int32)
+	// Lost: the connection to the named machine ended. If the cursor was
+	// there, it comes back here.
+	Lost(name string)
+}
+
+// Options configures a Group.
+type Options struct {
+	Name string // this machine
+	Key  string
+	Port int
+	// Bootstrap is any member's address, used until that member is known.
+	// Empty means waiting for the others to connect.
+	Bootstrap string
+	// Layout as saved, and the two-machine edge for a setup that predates
+	// layouts.
+	Layout     Layout
+	LegacyEdge string
+	// SaveLayout persists a layout that changed; nil keeps it in memory.
+	SaveLayout func(Layout) error
+	// StorePath keeps learned member addresses; "" keeps them in memory.
+	StorePath string
+	// Screen reports this machine's screen size, 0×0 if unknown.
+	Screen  func() (w, h int32)
+	Sharing bool
+	// Session prepares one connection: the handler its packets go to, and a
+	// function to run when it ends.
+	Session func(name string, conn *network.Conn) (*network.Handler, func())
+	// Cursor follows moves other machines announce; nil when not sharing.
+	Cursor CursorFollower
+	// Changed runs after anything worth showing changed: members, layout or
+	// where the cursor is.
+	Changed func()
+	// NeighborsChanged runs when a new layout gives this machine a neighbour
+	// on a different set of sides, so the edges watched must change.
+	NeighborsChanged func()
+}
+
+type link struct {
+	name string
+	// Guarded by Group.mu.
+	addr          string
+	conn          *network.Conn
+	info          bool
+	width, height int32
+	sharing       bool
+
+	incoming chan *network.Conn // dialed by the other machine
+	dialed   chan *network.Conn // dialed here, outside the link's own loop
+	kick     chan struct{}      // an address was learned: dial it
+}
+
+// Group runs this machine's membership in a group.
+type Group struct {
+	o Options
+
+	mu       sync.Mutex
+	links    map[string]*link
+	layout   Layout
+	epoch    uint32
+	loc      string // where the cursor is; "" = unknown
+	locBy    string // who announced it
+	msg      byte
+	bootName string // the member the bootstrap address reached
+	running  bool
+	stop     <-chan struct{}
+}
+
+// New prepares a group; Run starts it.
+func New(o Options) *Group {
+	g := &Group{o: o, links: map[string]*link{}, layout: o.Layout}
+	for name, addr := range loadMembers(o.StorePath) {
+		if name != o.Name {
+			if l := g.newLinkLocked(name); l != nil {
+				l.addr = addr
+			}
+		}
+	}
+	return g
+}
+
+// Run connects to the members, accepts their connections from incoming, and
+// returns when stop is closed.
+func (g *Group) Run(incoming <-chan *network.Conn, stop <-chan struct{}) {
+	g.mu.Lock()
+	g.running, g.stop = true, stop
+	links := slices.Collect(maps.Values(g.links))
+	g.mu.Unlock()
+	for _, l := range links {
+		go g.runLink(l)
+	}
+	if g.o.Bootstrap != "" {
+		go g.bootstrap()
+	}
+	for {
+		select {
+		case <-stop:
+			g.mu.Lock()
+			for _, l := range g.links {
+				if l.conn != nil {
+					_ = l.conn.Close()
+				}
+			}
+			g.mu.Unlock()
+			return
+		case conn, ok := <-incoming:
+			if !ok {
+				<-stop
+				return
+			}
+			g.route(conn, false)
+		}
+	}
+}
+
+// route hands a new connection to the link for the machine it reached.
+func (g *Group) route(conn *network.Conn, outbound bool) string {
+	name := strings.TrimRight(conn.RemoteName, " ")
+	if name == g.o.Name || !validName(name) {
+		slog.Warn("group: a machine connected with this machine's own name, or none; give each machine its own name",
+			"name", name)
+		_ = conn.Close()
+		return ""
+	}
+	g.mu.Lock()
+	l := g.links[name]
+	if l == nil {
+		l = g.newLinkLocked(name)
+		if l != nil && g.running {
+			go g.runLink(l)
+		}
+	}
+	g.mu.Unlock()
+	if l == nil {
+		slog.Warn("group: refusing a machine, the group is full", "name", name, "max", MaxMachines)
+		_ = conn.Close()
+		return ""
+	}
+	ch := l.incoming
+	if outbound {
+		ch = l.dialed
+	}
+	select {
+	case ch <- conn:
+	default:
+		_ = conn.Close()
+	}
+	return name
+}
+
+// newLinkLocked adds a member; nil when the group is full. g.mu held.
+func (g *Group) newLinkLocked(name string) *link {
+	if len(g.links) >= MaxMachines-1 {
+		return nil
+	}
+	l := &link{
+		name:     name,
+		incoming: make(chan *network.Conn, incomingBuffer),
+		dialed:   make(chan *network.Conn, incomingBuffer),
+		kick:     make(chan struct{}, 1),
+	}
+	g.links[name] = l
+	return l
+}
+
+func (g *Group) stopped() bool {
+	select {
+	case <-g.stop:
+		return true
+	default:
+		return false
+	}
+}
+
+// hostPort adds the group's port to addr unless it names one already.
+func (g *Group) hostPort(addr string) string {
+	if _, _, err := net.SplitHostPort(addr); err == nil {
+		return addr
+	}
+	return net.JoinHostPort(addr, strconv.Itoa(g.o.Port))
+}
+
+// runLink keeps one member connected for as long as the group runs.
+func (g *Group) runLink(l *link) {
+	for !g.stopped() {
+		g.mu.Lock()
+		addr := l.addr
+		g.mu.Unlock()
+		dialStop := make(chan struct{})
+		var out <-chan *network.Conn
+		if addr != "" {
+			out = network.ConnectWithRetry(g.hostPort(addr), g.o.Key, g.o.Name, dialTimeout, redialDelay, dialStop)
+		}
+		conn, outbound := g.pick(l, out)
+		close(dialStop)
+		if conn == nil {
+			continue // stopped, or an address to dial was learned
+		}
+		g.session(l, conn, outbound)
+		select {
+		case <-g.stop:
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+// pick waits for a connection to l and keeps the one both machines agree
+// on: the one dialed by the machine whose name sorts first, or whichever
+// exists after a grace period (see network.SelectLinuxPeer).
+func (g *Group) pick(l *link, out <-chan *network.Conn) (*network.Conn, bool) {
+	var first *network.Conn
+	var firstOut bool
+	var grace <-chan time.Time
+	prefer, decidable := network.PreferOutbound(g.o.Name, l.name)
+
+	consider := func(c *network.Conn, outbound bool) (*network.Conn, bool, bool) {
+		if c == nil {
+			return nil, false, false
+		}
+		if name := strings.TrimRight(c.RemoteName, " "); name != l.name {
+			// The address now belongs to another machine, or to this one.
+			slog.Debug("group: address reached a different machine", "want", l.name, "got", name)
+			_ = c.Close()
+			return nil, false, false
+		}
+		if first == nil {
+			if !decidable || prefer == outbound {
+				return c, outbound, true
+			}
+			first, firstOut = c, outbound
+			grace = time.After(network.LinuxPeerGrace)
+			return nil, false, false
+		}
+		if outbound == firstOut {
+			_ = c.Close() // a duplicate in the same direction
+			return nil, false, false
+		}
+		_ = first.Close() // c is the preferred direction
+		return c, outbound, true
+	}
+
+	for {
+		var c *network.Conn
+		var outbound, done bool
+		select {
+		case <-g.stop:
+			if first != nil {
+				_ = first.Close()
+			}
+			return nil, false
+		case <-l.kick:
+			if first != nil {
+				return first, firstOut
+			}
+			return nil, false
+		case conn, ok := <-out:
+			if !ok {
+				out = nil
+				continue
+			}
+			c, outbound, done = consider(conn, true)
+		case conn := <-l.dialed:
+			c, outbound, done = consider(conn, true)
+		case conn := <-l.incoming:
+			c, outbound, done = consider(conn, false)
+		case <-grace:
+			return first, firstOut
+		}
+		if done {
+			return c, outbound
+		}
+	}
+}
+
+// session runs one connection to a member until it ends.
+func (g *Group) session(l *link, conn *network.Conn, outbound bool) {
+	conn.SetIdleTimeout(network.LinuxPeerIdleTimeout)
+	g.mu.Lock()
+	l.conn, l.info = conn, false
+	learned := false
+	if l.addr == "" && !outbound {
+		// It reached us; that address reaches it too.
+		l.addr = conn.RemoteHost()
+		learned = true
+	}
+	g.mu.Unlock()
+	if learned {
+		g.saveMembers()
+	}
+	slog.Info("group: connected", "machine", l.name, "outbound", outbound)
+
+	h, end := g.o.Session(l.name, conn)
+	var asm protocol.GroupAssembler
+	h.OnGroup = func(p *protocol.Packet) {
+		switch p.Type {
+		case protocol.LinuxGroup:
+			if doc, ok := asm.Add(p); ok {
+				g.applyInfo(l, doc)
+			}
+		case protocol.LinuxCursor:
+			if c, ok := p.CursorAt(); ok {
+				g.applyCursor(l, h, c)
+			}
+		}
+	}
+	g.sendInfo(conn)
+	g.changed()
+
+	if err := network.ReceiveLoop(conn, h); err != nil {
+		slog.Info("group: connection ended", "machine", l.name, "err", err)
+	}
+	if end != nil {
+		end()
+	}
+	g.mu.Lock()
+	if l.conn == conn {
+		l.conn, l.info = nil, false
+	}
+	if g.loc == l.name {
+		g.loc = ""
+	}
+	g.mu.Unlock()
+	_ = conn.Close()
+	if g.o.Cursor != nil {
+		g.o.Cursor.Lost(l.name)
+	}
+	slog.Info("group: disconnected", "machine", l.name)
+	g.changed()
+}
+
+// bootstrap dials the configured address until it has found which member
+// it belongs to; from then on that member's link dials it.
+func (g *Group) bootstrap() {
+	for !g.stopped() {
+		g.mu.Lock()
+		found := g.bootName != "" && g.links[g.bootName] != nil
+		g.mu.Unlock()
+		if found {
+			g.sleep(bootstrapIdle)
+			continue
+		}
+		conn, err := network.Connect(g.hostPort(g.o.Bootstrap), g.o.Key, g.o.Name, dialTimeout)
+		if err != nil {
+			slog.Debug("group: bootstrap address not reachable yet", "host", g.o.Bootstrap, "err", err)
+			g.sleep(redialDelay)
+			continue
+		}
+		if routed := g.route(conn, true); routed != "" {
+			g.mu.Lock()
+			g.bootName = routed
+			if l := g.links[routed]; l != nil && l.addr == "" {
+				l.addr = g.o.Bootstrap
+			}
+			g.mu.Unlock()
+			g.saveMembers()
+		} else {
+			g.sleep(redialDelay)
+		}
+	}
+}
+
+func (g *Group) sleep(d time.Duration) {
+	select {
+	case <-g.stop:
+	case <-time.After(d):
+	}
+}
+
+// sendInfo sends this machine's group document over conn.
+func (g *Group) sendInfo(conn *network.Conn) {
+	var w, h int32
+	if g.o.Screen != nil {
+		w, h = g.o.Screen()
+	}
+	g.mu.Lock()
+	members := map[string]string{}
+	for name, l := range g.links {
+		if l.addr != "" {
+			members[name] = l.addr
+		}
+	}
+	doc, err := encodeInfo(g.layout, members, w, h, g.o.Sharing, g.epoch, g.o.Port, time.Now())
+	g.msg++
+	msg := g.msg
+	g.mu.Unlock()
+	if err != nil {
+		slog.Warn("group: could not encode the group document", "err", err)
+		return
+	}
+	pkts, err := protocol.GroupChunks(conn.MachineID, conn.RemoteID, msg, doc)
+	if err != nil {
+		slog.Warn("group: group document too large", "bytes", len(doc), "err", err)
+		return
+	}
+	for _, p := range pkts {
+		if err := conn.SendPacket(p); err != nil {
+			slog.Debug("group: send group document", "err", err)
+			return
+		}
+	}
+}
+
+func (g *Group) onlineConns() []*network.Conn {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	var out []*network.Conn
+	for _, l := range g.links {
+		if l.conn != nil {
+			out = append(out, l.conn)
+		}
+	}
+	return out
+}
+
+// Conns returns the connections to every member online now.
+func (g *Group) Conns() []*network.Conn { return g.onlineConns() }
+
+// applyInfo takes a member's group document.
+func (g *Group) applyInfo(from *link, doc []byte) {
+	in, theirs, err := decodeInfo(doc, time.Now())
+	if err != nil {
+		slog.Warn("group: ignoring a group document", "machine", from.name, "err", err)
+		return
+	}
+	me := g.o.Name
+	g.mu.Lock()
+	from.info, from.width, from.height, from.sharing = true, in.Width, in.Height, in.Sharing
+	g.epoch = max(g.epoch, in.Epoch)
+
+	var start []*link
+	learned := false
+	if in.Port > 0 && in.Port != g.o.Port && from.addr != "" {
+		// It listens on a port of its own: dial that one.
+		if _, _, err := net.SplitHostPort(from.addr); err != nil {
+			from.addr = net.JoinHostPort(from.addr, strconv.Itoa(in.Port))
+			learned = true
+		}
+	}
+	for name, addr := range in.Members {
+		if name == me {
+			continue
+		}
+		l := g.links[name]
+		if l == nil {
+			if l = g.newLinkLocked(name); l == nil {
+				slog.Warn("group: not adding a member, the group is full", "name", name, "max", MaxMachines)
+				continue
+			}
+			start = append(start, l)
+		}
+		// An offline member may have moved: take the newer report.
+		if addr != "" && addr != l.addr && (l.addr == "" || l.conn == nil) {
+			l.addr = addr
+			learned = true
+			select {
+			case l.kick <- struct{}{}:
+			default:
+			}
+		}
+	}
+
+	before := g.layout
+	leftBefore, rightBefore := Neighbors(before.Order, me)
+	if len(theirs.Order) > 0 && theirs.Newer(g.layout) {
+		g.layout = theirs
+	}
+	bumped := g.completeLocked()
+	after := g.layout
+	running := g.running
+	g.mu.Unlock()
+
+	if running {
+		for _, l := range start {
+			go g.runLink(l)
+		}
+	}
+	if learned || len(start) > 0 {
+		g.saveMembers()
+	}
+	g.layoutUpdated(before, after, leftBefore, rightBefore, bumped)
+	g.changed()
+}
+
+// completeLocked adds members missing from the layout. Adding another
+// machine is a new choice the others must hear about; adding only this one
+// is not. Reports whether this machine made a new choice. g.mu held.
+func (g *Group) completeLocked() bool {
+	names := slices.Collect(maps.Keys(g.links))
+	slices.Sort(names)
+	order, added := Complete(g.layout.Order, names, g.o.Name, g.o.LegacyEdge)
+	if !added {
+		return false
+	}
+	others := false
+	for _, n := range order {
+		if n != g.o.Name && !slices.Contains(g.layout.Order, n) {
+			others = true
+		}
+	}
+	g.layout.Order = order
+	if others {
+		g.layout.Changed, g.layout.By = time.Now().Unix(), g.o.Name
+	}
+	return others
+}
+
+// layoutUpdated saves and announces a layout that changed.
+func (g *Group) layoutUpdated(before, after Layout, leftBefore, rightBefore, originated bool) {
+	if after.Equal(before) {
+		return
+	}
+	slog.Info("group: screen order", "layout", after.Order, "by", after.By)
+	if g.o.SaveLayout != nil && after.Changed > 0 {
+		if err := g.o.SaveLayout(after); err != nil {
+			slog.Warn("group: could not save the screen order", "err", err)
+		}
+	}
+	if originated {
+		for _, c := range g.onlineConns() {
+			g.sendInfo(c)
+		}
+	}
+	left, right := Neighbors(after.Order, g.o.Name)
+	if (left != leftBefore || right != rightBefore) && g.o.NeighborsChanged != nil {
+		g.o.NeighborsChanged()
+	}
+}
+
+// Start completes the saved layout with the members already known, as
+// Run's first step would; call before Run so the capturer sees the result.
+func (g *Group) Start() {
+	g.mu.Lock()
+	before := g.layout
+	l, r := Neighbors(before.Order, g.o.Name)
+	bumped := g.completeLocked()
+	after := g.layout
+	g.mu.Unlock()
+	g.layoutUpdated(before, after, l, r, bumped)
+}
+
+// applyCursor follows a member's announcement of where the cursor is.
+func (g *Group) applyCursor(from *link, h *network.Handler, c protocol.CursorAt) {
+	me := g.o.Name
+	g.mu.Lock()
+	if c.Epoch < g.epoch || (c.Epoch == g.epoch && from.name >= g.locBy) {
+		g.mu.Unlock()
+		return // older news, or the same move announced twice
+	}
+	target := ""
+	if protocol.NameHash(me) == c.Target {
+		target = me
+	}
+	for name := range g.links {
+		if protocol.NameHash(name) == c.Target {
+			target = name
+		}
+	}
+	if target == "" {
+		g.mu.Unlock()
+		return
+	}
+	g.epoch, g.loc, g.locBy = c.Epoch, target, from.name
+	var t Target
+	if target != me {
+		tl := g.links[target]
+		t = Target{Name: target, Conn: tl.conn, Width: orDefault(tl.width, defaultWidth), Height: orDefault(tl.height, defaultHeight)}
+	}
+	g.mu.Unlock()
+
+	slog.Info("group: cursor moved", "to", target, "by", from.name, "epoch", c.Epoch)
+	if target == me {
+		h.Reseed() // the announcer's input comes on this connection next
+		if g.o.Cursor != nil {
+			g.o.Cursor.Arrive(c.Side, c.Y)
+		}
+	} else if g.o.Cursor != nil && t.Conn != nil {
+		g.o.Cursor.Follow(t, c.Side, c.Y)
+	}
+	g.changed()
+}
+
+func orDefault(v, d int32) int32 {
+	if v > 0 {
+		return v
+	}
+	return d
+}
+
+// Moved announces that this machine's input moved the cursor to the machine
+// named to ("" = this one), entering its screen from side at height y.
+func (g *Group) Moved(to, side string, y int32) {
+	g.mu.Lock()
+	if to == "" {
+		to = g.o.Name
+	}
+	g.epoch++
+	g.loc, g.locBy = to, g.o.Name
+	c := protocol.CursorAt{Epoch: g.epoch, Target: protocol.NameHash(to), Side: side, Y: y}
+	g.mu.Unlock()
+	for _, conn := range g.onlineConns() {
+		if err := conn.SendPacket(protocol.NewCursorPacket(conn.MachineID, conn.RemoteID, c)); err != nil {
+			slog.Debug("group: announce cursor", "err", err)
+		}
+	}
+	g.changed()
+}
+
+// Beyond returns the machine past side of the machine named from ("" = this
+// one), skipping members that are offline. self reports this machine.
+func (g *Group) Beyond(from, side string) (t Target, self, ok bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	me := g.o.Name
+	if from == "" {
+		from = me
+	}
+	online := func(n string) bool {
+		if n == me {
+			return true
+		}
+		l := g.links[n]
+		return l != nil && l.conn != nil
+	}
+	name, ok := Beyond(g.layout.Order, online, from, side)
+	if !ok {
+		return Target{}, false, false
+	}
+	if name == me {
+		return Target{Name: me}, true, true
+	}
+	l := g.links[name]
+	return Target{Name: name, Conn: l.conn, Width: orDefault(l.width, defaultWidth), Height: orDefault(l.height, defaultHeight)}, false, true
+}
+
+// Neighbors reports which sides of this machine's screen border another
+// machine in the layout, online or not.
+func (g *Group) Neighbors() (left, right bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return Neighbors(g.layout.Order, g.o.Name)
+}
+
+func (g *Group) saveMembers() {
+	g.mu.Lock()
+	members := map[string]string{}
+	for name, l := range g.links {
+		if l.addr != "" {
+			members[name] = l.addr
+		}
+	}
+	g.mu.Unlock()
+	if err := saveMembers(g.o.StorePath, members); err != nil {
+		slog.Warn("group: could not save member addresses", "err", err)
+	}
+}
+
+func (g *Group) changed() {
+	if g.o.Changed != nil {
+		g.o.Changed()
+	}
+}
+
+// Member is one other machine as the status file shows it.
+type Member struct {
+	Name    string `json:"name"`
+	Online  bool   `json:"online"`
+	Address string `json:"address,omitempty"`
+	Width   int32  `json:"width,omitempty"`
+	Height  int32  `json:"height,omitempty"`
+	Sharing bool   `json:"sharing"`
+	// Current is false for a member online with an older mwb that does not
+	// take part in the group.
+	Current bool `json:"current"`
+}
+
+// Snapshot is the group's state for display.
+type Snapshot struct {
+	Layout   []string
+	Location string
+	Members  []Member
+}
+
+// Snapshot returns the current state, members in layout order.
+func (g *Group) Snapshot() Snapshot {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	s := Snapshot{Layout: slices.Clone(g.layout.Order), Location: g.loc}
+	names := slices.Collect(maps.Keys(g.links))
+	slices.SortFunc(names, func(a, b string) int {
+		ia, ib := slices.Index(g.layout.Order, a), slices.Index(g.layout.Order, b)
+		if ia < 0 {
+			ia = MaxMachines
+		}
+		if ib < 0 {
+			ib = MaxMachines
+		}
+		if ia != ib {
+			return ia - ib
+		}
+		return strings.Compare(a, b)
+	})
+	for _, n := range names {
+		l := g.links[n]
+		s.Members = append(s.Members, Member{
+			Name: n, Online: l.conn != nil, Address: l.addr,
+			Width: l.width, Height: l.height, Sharing: l.sharing, Current: l.info,
+		})
+	}
+	return s
+}

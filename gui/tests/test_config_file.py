@@ -110,6 +110,18 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(out, 'host = "a"\nedge = "right"\nedge_changed = 1700000000\n')
         self.assertEqual(cf.parse(out).values()["edge_changed"], 1700000000)
 
+    def test_layout_list_round_trips(self):
+        doc = cf.parse('host = "a"\nlayout = [ "left one", \'mid\' ,"r\\"q" ]  # order\n')
+        self.assertEqual(doc.values()["layout"], ["left one", "mid", 'r"q'])
+        out = cf.render(doc, {"layout": ["x", "y"], "layout_changed": 1700000000})
+        self.assertEqual(out, 'host = "a"\nlayout = ["x", "y"]  # order\nlayout_changed = 1700000000\n')
+        self.assertEqual(cf.parse(out).values()["layout"], ["x", "y"])
+        self.assertEqual(cf.parse('host = "a"\n').values()["layout"], [])
+        with self.assertRaises(cf.ConfigError):
+            cf.parse("layout = [1, 2]\n")
+        with self.assertRaises(cf.ConfigError):
+            cf.parse('layout = [\n  "a",\n]\n')
+
     def test_appends_to_file_without_trailing_newline(self):
         out = cf.render(cf.parse('host = "a"'), {"edge": "right"})
         self.assertEqual(out, 'host = "a"\nedge = "right"\n')
@@ -198,6 +210,11 @@ class ValidateTests(unittest.TestCase):
     def test_reports_problems(self):
         p = cf.validate(self.good(host=" ", key="", name="a-very-long-hostname", remote_width=10))
         self.assertEqual(set(p), {"host", "key", "name", "remote_width"})
+
+    def test_layout_limits(self):
+        self.assertEqual(cf.validate(self.good(layout=["a", "b", "c"])), {})
+        for bad in (["a", "a"], ["a"] * 7, ["a", ""], ["a-very-long-hostname"]):
+            self.assertIn("layout", cf.validate(self.good(layout=bad)), bad)
 
     def test_short_key_warns_but_does_not_block(self):
         # The client accepts any non-empty key; the GUI must not lock out a

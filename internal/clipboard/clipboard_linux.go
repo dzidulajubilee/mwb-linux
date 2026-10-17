@@ -54,6 +54,7 @@ type Manager struct {
 	OnFileCopy func(paths []string)
 
 	conn        *network.Conn
+	peers       func() []*network.Conn // group mode: every member online now
 	display     string
 	lastHash    string // hash of last clipboard content we sent
 	mu          sync.Mutex
@@ -83,6 +84,43 @@ func NewManager(conn *network.Conn, display string) *Manager {
 	m.stageRoot = defaultStageRoot()
 	m.setFileClipboard = m.setLocalFileClipboard
 	return m
+}
+
+// NewGroupManager creates a clipboard manager that shares with every machine
+// peers returns, for a group of mwb-linux machines.
+func NewGroupManager(peers func() []*network.Conn, display string) *Manager {
+	m := NewManager(nil, display)
+	m.peers = peers
+	return m
+}
+
+// conns returns where clipboard changes go.
+func (m *Manager) conns() []*network.Conn {
+	if m.peers != nil {
+		return m.peers()
+	}
+	if m.conn != nil {
+		return []*network.Conn{m.conn}
+	}
+	return nil
+}
+
+// broadcast sends pkts, in order, over every connection, each stamped with
+// that connection's machine ID. It reports whether every send succeeded.
+func (m *Manager) broadcast(pkts []*protocol.Packet) bool {
+	ok := true
+	for _, conn := range m.conns() {
+		for _, tmpl := range pkts {
+			p := *tmpl
+			p.Src = conn.MachineID
+			if err := conn.SendPacket(&p); err != nil {
+				slog.Error("send clipboard failed", "remote", conn.RemoteName, "err", err)
+				ok = false
+				break
+			}
+		}
+	}
+	return ok
 }
 
 // Start begins monitoring the local clipboard for changes.
@@ -334,40 +372,8 @@ func (m *Manager) sendText(text string) {
 		return
 	}
 
-	// Chunk into 48-byte packets
-	for offset := 0; offset < len(compressed); offset += dataSize {
-		end := offset + dataSize
-		if end > len(compressed) {
-			end = len(compressed)
-		}
-		chunk := compressed[offset:end]
-
-		pkt := &protocol.Packet{
-			Type: protocol.ClipboardText,
-			Src:  m.conn.MachineID,
-			Des:  protocol.IDAll,
-		}
-		// Copy chunk into packet payload (bytes 16-63)
-		// We need to set the raw bytes — use Mouse fields as overlay
-		// The packet Marshal will handle this via the ClipboardText case
-		pkt.ClipboardData = make([]byte, dataSize)
-		copy(pkt.ClipboardData, chunk)
-
-		if err := m.conn.SendPacket(pkt); err != nil {
-			slog.Error("send clipboard chunk failed", "err", err)
-			return
-		}
-	}
-
-	// Send end marker
-	endPkt := &protocol.Packet{
-		Type: protocol.ClipboardDataEnd,
-		Src:  m.conn.MachineID,
-		Des:  protocol.IDAll,
-	}
-	endPkt.ClipboardData = make([]byte, dataSize)
-	if err := m.conn.SendPacket(endPkt); err != nil {
-		slog.Error("send clipboard end failed", "err", err)
+	if !m.broadcast(clipboardPackets(protocol.ClipboardText, compressed)) {
+		return
 	}
 
 	slog.Info("clipboard sent to remote", "chunks", (len(compressed)+dataSize-1)/dataSize)
@@ -603,40 +609,27 @@ func (m *Manager) sendImage(data []byte) {
 		return
 	}
 
-	// Chunk into 48-byte packets
-	for offset := 0; offset < len(data); offset += dataSize {
-		end := offset + dataSize
-		if end > len(data) {
-			end = len(data)
-		}
-		chunk := data[offset:end]
-
-		pkt := &protocol.Packet{
-			Type: protocol.ClipboardImage,
-			Src:  m.conn.MachineID,
-			Des:  protocol.IDAll,
-		}
-		pkt.ClipboardData = make([]byte, dataSize)
-		copy(pkt.ClipboardData, chunk)
-
-		if err := m.conn.SendPacket(pkt); err != nil {
-			slog.Error("send image chunk failed", "err", err)
-			return
-		}
-	}
-
-	// End marker
-	endPkt := &protocol.Packet{
-		Type: protocol.ClipboardDataEnd,
-		Src:  m.conn.MachineID,
-		Des:  protocol.IDAll,
-	}
-	endPkt.ClipboardData = make([]byte, dataSize)
-	if err := m.conn.SendPacket(endPkt); err != nil {
-		slog.Error("send clipboard end failed", "err", err)
+	if !m.broadcast(clipboardPackets(protocol.ClipboardImage, data)) {
+		return
 	}
 
 	slog.Info("image clipboard sent to remote", "chunks", (len(data)+dataSize-1)/dataSize)
+}
+
+// clipboardPackets splits data into 48-byte chunks of type t, followed by
+// the end marker.
+func clipboardPackets(t protocol.PackageType, data []byte) []*protocol.Packet {
+	var pkts []*protocol.Packet
+	for offset := 0; offset < len(data); offset += dataSize {
+		chunk := data[offset:min(offset+dataSize, len(data))]
+		pkt := &protocol.Packet{Type: t, Des: protocol.IDAll}
+		pkt.ClipboardData = make([]byte, dataSize)
+		copy(pkt.ClipboardData, chunk)
+		pkts = append(pkts, pkt)
+	}
+	end := &protocol.Packet{Type: protocol.ClipboardDataEnd, Des: protocol.IDAll}
+	end.ClipboardData = make([]byte, dataSize)
+	return append(pkts, end)
 }
 
 // encodeUTF16LE encodes a Go string to UTF-16LE bytes.

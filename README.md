@@ -48,7 +48,7 @@ No extra software needed on Windows beyond PowerToys, which bundles Mouse Withou
 - **Device isolation** — When controlling Windows, your Linux cursor doesn't move
 - **Dual-mode connection** — Acts as both server and client for fast reconnection
 - **Zero config on Windows** — Works with existing PowerToys MWB setup
-- **Linux to Linux** — Pair two Linux machines with `peer = "linux"`; no Windows PC needed
+- **Linux to Linux** — Two to six Linux machines in a row with `peer = "linux"`; no Windows PC needed
 - **Optional settings window** — `mwb-gui` edits the config and shows live status
 - **Lightweight** — Single binary, ~5MB, no GUI dependencies (the settings window is separate)
 
@@ -229,77 +229,84 @@ In PowerToys MWB, enter the security key and device name to connect.
 
 ## Linux to Linux
 
-Two Linux machines can share one keyboard and mouse with no Windows PC
-involved. Pairing works like PowerToys: one computer waits, and the other
-connects to it.
+Two to six Linux machines can share their keyboards and mice with no Windows
+PC involved. Their screens sit in one row, left to right, and the pointer
+walks across all of them. Setting up works like PowerToys: one computer
+waits, and the others connect to it.
 
-**In the settings window** (`mwb-gui`), on both computers:
+**In the settings window** (`mwb-gui`), on every computer:
 
 1. Set **Other computer** to *Linux with mwb-linux*.
 2. **Security key:** click Generate on one computer, then Copy it and use
-   the same key on the other.
+   the same key everywhere.
 3. **Address:** leave it empty on one computer, so that it waits. The window
-   shows that computer's address. On the other computer, enter that address.
-4. In the screen arrangement, click the side the other computer is on. This
-   must be opposite on the two machines.
+   shows that computer's address. On each of the others, enter that address.
+   You only ever enter one address: the computers tell each other where the
+   rest are, and connect to all of them.
+4. **Name:** give each computer a different name.
 5. Click **Save**, then **Start**.
+6. Once they are connected, arrange the screens in the order they stand on
+   your desk: with two, click to swap them; with more, drag them. Save. The
+   other computers pick up the new order by themselves.
 
-**In config files**, the same setup looks like this:
+**In config files**, three machines look like this:
 
 ```toml
-# On "desk", which waits (the laptop is to its right)
-key = "PASTE-THE-SAME-KEY-ON-BOTH"
+# On "desk", which waits
+key = "PASTE-THE-SAME-KEY-EVERYWHERE"
 name = "desk"
 peer = "linux"
-edge = "right"
 ```
 
 ```toml
-# On "laptop", which connects (the desk is to its left)
-host = "192.168.1.20"     # the desk's address
-key = "PASTE-THE-SAME-KEY-ON-BOTH"
-name = "laptop"
+# On "laptop" and on "mini": the same, plus the desk's address
+host = "192.168.1.20"
+key = "PASTE-THE-SAME-KEY-EVERYWHERE"
+name = "laptop"            # "mini" on the other one
 peer = "linux"
-edge = "left"
 ```
 
-Start mwb on both, for example with `systemctl --user enable --now mwb`.
+Start mwb on all of them, for example with `systemctl --user enable --now mwb`.
 
 Without further setup:
 
-- **Both directions share.** Either computer's keyboard and mouse can cross
-  the shared edge, because `bidirectional` defaults to on for a Linux pair.
-  Set `bidirectional = false` on a machine that should only be controlled.
-- **Screen sizes are exchanged.** Right after connecting, each machine tells
-  the other its screen size, so `remote_width` and `remote_height` are only a
-  fallback.
-- **Sides stay mirrored.** "The other computer is on my left" and "I am on
-  its right" are one fact, so you only need to set it on one machine. Saving
-  the side in the settings window records when it was chosen
-  (`edge_changed`). If the two machines disagree when they connect, the more
-  recent choice wins: the other machine saves the mirror of it to its own
-  `config.toml` and reconnects, and its settings window says so. A side
-  forced with `-edge` on the command line is never changed.
-- **Mistakes are reported.** Each machine also says whether it actually
-  shares. If neither shares, or the sides cannot be mirrored (for example the
-  other machine runs an older version), the settings window and the log say
-  so and what to change.
+- **One pointer, any keyboard.** The pointer is on one computer at a time.
+  Move it past a screen edge that touches another computer and it goes
+  there; keep going and it crosses the next one. Whichever computer's
+  keyboard and mouse you pick up drive it, because `bidirectional` defaults
+  to on. Set `bidirectional = false` on a machine that should only be
+  controlled.
+- **The order stays in sync.** The screen order is stored as `layout` (with
+  `layout_changed`, when it was chosen). The most recent choice wins and
+  every computer saves it. A new computer joins on the right; drag it where
+  it belongs.
+- **Computers come and go.** If a computer goes offline, the pointer skips
+  its screen. If it had the pointer, each of the others takes its own back
+  within the 20-second silence timeout, and any key or mouse button it was
+  holding down is released. It rejoins when it comes back.
+- **Screen sizes are exchanged.** Each computer tells the others its screen
+  size, so `remote_width` and `remote_height` are only a fallback.
+- **Mistakes are reported.** The settings window lists which computers are
+  online, and says so if one runs an older mwb that cannot join.
 
-Clipboard and file copy work in both directions. Sending input needs X11 or
-XWayland on that machine; see [Known Limitations](#known-limitations).
+Two Linux machines set up before groups existed keep working: their `edge`
+setting decides the order until a `layout` is saved. Every machine in a group
+needs this version or newer.
 
-The waiting computer accepts a connection only from the local network
-(private and link-local addresses, never the internet or itself), and only
-with the shared key. That's the same rule a computer with an address set
-already uses.
+Clipboard text and images go to every computer; a copied file is sent to
+each computer that is online. Sending input needs X11 or XWayland on that
+machine; see [Known Limitations](#known-limitations).
+
+The computers accept connections only from the local network (private and
+link-local addresses, never the internet or themselves), and only with the
+shared key. Learned addresses are kept in `~/.local/state/mwb/members.json`.
 
 Why `peer = "linux"` matters: each machine listens and dials at the same time.
-PowerToys closes the duplicate connection itself. Two mwb-linux instances have
-no such referee, so without this setting they can each keep a different
-connection and stop hearing each other. With it, both machines keep the
-connection dialed by the machine whose name sorts first. A link that goes
-quiet for 20 seconds is dropped and redialed. The settings exchange is an
-mwb-linux addition and is never sent to PowerToys.
+PowerToys closes duplicate connections itself. mwb-linux machines have no
+such referee, so for each pair they keep the connection dialed by the machine
+whose name sorts first. A link that goes quiet for 20 seconds is dropped and
+redialed. The group messages are an mwb-linux addition and are never sent to
+PowerToys.
 
 ## Settings window
 
@@ -379,13 +386,15 @@ keep the client on a trusted network segment.
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `host` | (required) | The other machine's IP address. With `peer = "linux"` it may be empty: this machine then waits for the other to connect |
+| `host` | (required) | The other machine's IP address. With `peer = "linux"`, any one member of the group, or empty: this machine then waits for the others to connect |
 | `key` | (required) | MWB security key (from PowerToys) |
 | `name` | hostname | This machine's display name |
 | `port` | 15100 | Base port (message port = 15101) |
 | `remote_width` | 1920 | Remote screen width in pixels. A Linux peer reports its own, which takes precedence |
 | `remote_height` | 1080 | Remote screen height in pixels. A Linux peer reports its own, which takes precedence |
-| `edge` | left | Screen edge for switching: `left` or `right` |
+| `edge` | left | Screen edge for switching: `left` or `right`. With `peer = "linux"`, used only until a `layout` is saved |
+| `layout` | — | `peer = "linux"` only: the machine names left to right, e.g. `["desk", "laptop"]`, up to 6. mwb-gui and mwb keep it, and it stays in sync across the group |
+| `layout_changed` | — | When `layout` was chosen, in Unix seconds; the most recent choice wins across the group |
 | `clipboard` | true | Clipboard sync: set `false` to disable text/image sharing |
 | `accel_multiplier` | 2.0 | Cursor speed when controlling the other machine (mouse and touchpad). Fast movement accelerates up to 3× this. Lower it (e.g. `1.0`) if the remote cursor feels too fast, raise it if too slow |
 | `inbound_multiplier` | 1.0 | Cursor speed when Windows controls Linux. `1.0` mirrors Windows exactly; raise it for faster inbound movement |
@@ -393,7 +402,7 @@ keep the client on a trusted network segment.
 | `file_dir` | — | Deprecated and ignored. Windows files use hidden clipboard backing storage under `$XDG_CACHE_HOME/mwb/clipboard` and a native GNOME/generic file selection, then appear in a visible folder only on paste |
 | `max_file_size` | 104857600 | Per-transfer cap in bytes. The default matches MWB's own 100 MB limit; a stock Windows peer neither sends nor accepts more |
 | `legacy_crypto` | false | Use the stream encryption PowerToys used before 0.101 (fixed salt and IV, 50,000 PBKDF2 iterations). Only needed for a Windows peer pinned to an older PowerToys |
-| `peer` | windows | What runs on the other machine: `windows` (PowerToys) or `linux` (another mwb-linux). Set `linux` on both machines of a Linux pair; see [Linux to Linux](#linux-to-linux). Other values are rejected |
+| `peer` | windows | What runs on the other machine: `windows` (PowerToys) or `linux` (another mwb-linux). Set `linux` on every machine of a Linux group; see [Linux to Linux](#linux-to-linux). Other values are rejected |
 | `bidirectional` | false (Windows peer), true (Linux peer) | Send this machine's keyboard and mouse to the other one at the edge, like `-bidi`. Lets the user service run bidirectionally. An explicit `-bidi` or `-bidi=false` flag overrides it |
 | `keyboard_layout` | auto | Inbound Windows-to-Linux keyboard mapping. `auto` detects the local Linux layout when possible; supported profiles include `us`, `de`, `fr`, `be`, `es`, `it`, `gb`, `pt`, `no`/`dk`/`se`/`fi`, `ch`, and `nl` |
 
@@ -539,17 +548,17 @@ scripts/
   likewise never grabbed, which keeps the physical power button available as a
   last-resort recovery path.
 - **Cursor speed / drift** — Remote cursor movement scales raw evdev deltas by `accel_multiplier` (default 2×), rising to 3× that for fast movement; lower it if the remote cursor feels too fast (the other side adds no acceleration of its own). Tracking is open-loop, so the virtual cursor may still drift from the actual position over long sessions.
-- **Linux pairs share one cursor** — With `peer = "linux"` and both machines
-  bidirectional, whichever machine does not currently own the cursor forwards
-  its own keyboard and mouse to the machine that does. Its estimate of where
-  the cursor sits is open-loop, as above. If you use both machines' mice
-  while the cursor is on one of them, it can switch at a slightly different
-  spot than you expect. Crossing the screen edge on the machine that owns the
-  cursor is always exact.
-- **Linux pairs need different names** — The connection rule compares the two
-  machines' `name` values. If they match, mwb warns and falls back to
-  first-wins, which can occasionally leave the two machines on different
-  connections until the 20s silence timeout redials.
+- **Linux groups share one cursor** — With `peer = "linux"`, every
+  bidirectional machine that does not have the cursor forwards its own
+  keyboard and mouse to the one that does. Its estimate of where the cursor
+  sits is open-loop, as above. If you use two machines' mice while the cursor
+  is on a third, it can cross at a slightly different spot than you expect.
+- **Linux groups are one row** — Screens sit side by side, up to six; there
+  is no above or below yet. Windows/PowerToys peers stay one-to-one and
+  cannot join a Linux group.
+- **Linux groups need different names** — The connection rule compares
+  machines' `name` values, and the group tells machines apart by name. A
+  machine with a duplicate name is refused.
 
 ## Contributing
 

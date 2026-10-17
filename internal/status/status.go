@@ -18,8 +18,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/lucky-verma/mwb-linux/internal/group"
 )
 
 // States written to the file.
@@ -46,14 +49,20 @@ type Status struct {
 	// and capture started. Known once connected.
 	Sharing *bool `json:"sharing,omitempty"`
 	// Peer* come from a Linux peer's LinuxPeerInfo; absent until it arrives.
-	PeerScreenWidth  int32     `json:"peer_screen_width,omitempty"`
-	PeerScreenHeight int32     `json:"peer_screen_height,omitempty"`
-	PeerEdge         string    `json:"peer_edge,omitempty"`
-	PeerSharing      *bool     `json:"peer_sharing,omitempty"`
-	Clipboard        bool      `json:"clipboard"`
-	PID              int       `json:"pid"`
-	Version          string    `json:"version"`
-	Since            time.Time `json:"since"`
+	PeerScreenWidth  int32  `json:"peer_screen_width,omitempty"`
+	PeerScreenHeight int32  `json:"peer_screen_height,omitempty"`
+	PeerEdge         string `json:"peer_edge,omitempty"`
+	PeerSharing      *bool  `json:"peer_sharing,omitempty"`
+	Clipboard        bool   `json:"clipboard"`
+	// Group state, for peer = "linux": the screens left to right, the other
+	// machines, and which machine has the cursor ("" = unknown).
+	Group    bool           `json:"group,omitempty"`
+	Layout   []string       `json:"layout,omitempty"`
+	Members  []group.Member `json:"members,omitempty"`
+	Location string         `json:"location,omitempty"`
+	PID      int            `json:"pid"`
+	Version  string         `json:"version"`
+	Since    time.Time      `json:"since"`
 }
 
 // Path returns the status file location, or "" when XDG_RUNTIME_DIR is unset.
@@ -118,6 +127,28 @@ func (w *Writer) Peer(width, height int32, edge string, sharing bool) error {
 // the peer named from chose more recently. It lasts for the process lifetime.
 func (w *Writer) AdoptedEdge(edge, from string) error {
 	return w.write(func(s *Status) { s.Edge, s.EdgeFrom = edge, from })
+}
+
+// Group records a group's state. The connection counts as up while any other
+// machine is online, and Remote lists the ones that are.
+func (w *Writer) Group(snap group.Snapshot) error {
+	return w.write(func(s *Status) {
+		s.Group = true
+		s.Layout, s.Members, s.Location = snap.Layout, snap.Members, snap.Location
+		var online []string
+		for _, m := range snap.Members {
+			if m.Online {
+				online = append(online, m.Name)
+			}
+		}
+		if len(online) > 0 {
+			s.State = StateConnected
+			s.Remote = strings.Join(online, ", ")
+		} else {
+			s.State = StateConnecting
+			s.Remote = ""
+		}
+	})
 }
 
 // Remove deletes the status file on clean shutdown. A crash leaves it behind;

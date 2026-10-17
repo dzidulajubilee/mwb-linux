@@ -14,8 +14,12 @@ Use `mwb-gui --config PATH` to edit a different file.
 
 ## What it does
 
-- **Screen arrangement.** Click the side the other computer is on. This sets
-  `edge`.
+- **Screen arrangement.** The screens in a row, as they stand on the desk.
+  With two, click to swap them; this sets `edge` (or `layout` once the
+  machines are named in one). With a group of Linux computers, drag the
+  screens into order; this sets `layout` and `layout_changed`, which mwb
+  copies to the rest of the group. Offline computers are drawn dashed, and
+  the screen with the pointer says so.
 - **Connection.** Pick the other computer type (`peer`), its address
   (`host`), the shared security key (`key`, with Generate and Copy), this
   computer's name (`name`), and the other screen's size (`remote_width`,
@@ -26,7 +30,7 @@ Use `mwb-gui --config PATH` to edit a different file.
 - **Background service.** Start, stop or restart the service, choose whether
   it starts at login, and read the recent log.
 - **Live status.** Read from `$XDG_RUNTIME_DIR/mwb/status.json`, which the
-  client writes.
+  client writes. For a group it lists which computers are online.
 - **Tray icon.** Closing the window leaves an icon in the tray: click it to
   open the window, right-click for the connection state, Start/Stop sharing
   and Quit (which also stops the service). `mwb-gui --background` starts with

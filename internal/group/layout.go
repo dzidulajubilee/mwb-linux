@@ -1,0 +1,119 @@
+// Package group runs a group of up to six mwb-linux machines whose screens
+// sit in one row. Every machine connects to every other one, they share the
+// row's order (the layout) and the single cursor's location, and any machine
+// whose keyboard and mouse are used drives that cursor.
+package group
+
+import (
+	"slices"
+	"sort"
+)
+
+// MaxMachines is the largest group, this machine included.
+const MaxMachines = 6
+
+// Layout is the left-to-right order of the screens, by machine name.
+type Layout struct {
+	Order []string
+	// Changed is when the order was chosen, in this machine's Unix seconds;
+	// 0 means unknown, older than any known choice. Peers send an age rather
+	// than a time, so clocks need not agree.
+	Changed int64
+	// By names the machine that made the choice; it settles a tie.
+	By string
+}
+
+// Newer reports whether l is a more recent choice than other. Every machine
+// decides the same way on the same pair, so the group converges on one.
+func (l Layout) Newer(other Layout) bool {
+	if l.Changed != other.Changed {
+		return l.Changed > other.Changed
+	}
+	if l.By != other.By {
+		return l.By < other.By
+	}
+	return false
+}
+
+// Equal reports whether both describe the same choice.
+func (l Layout) Equal(other Layout) bool {
+	return l.Changed == other.Changed && l.By == other.By && slices.Equal(l.Order, other.Order)
+}
+
+// Complete returns order with every machine in names present exactly once.
+// Machines it lacks are added on the right in name order, so machines that
+// complete the same order independently get the same result. A machine with
+// no layout yet and a single peer places that peer on legacyEdge, the side
+// the two-machine setting chose ("left" or "right"). added reports a change.
+func Complete(order []string, names []string, me, legacyEdge string) (out []string, added bool) {
+	seen := map[string]bool{}
+	for _, n := range order {
+		if n != "" && !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	var missing []string
+	for _, n := range append([]string{me}, names...) {
+		if n != "" && !seen[n] {
+			seen[n] = true
+			missing = append(missing, n)
+		}
+	}
+	if len(missing) == 0 {
+		return out, len(out) != len(order)
+	}
+	sort.Strings(missing)
+	if len(out) <= 1 && len(names) == 1 && names[0] != me && (len(out) == 0 || out[0] == me) {
+		// Two machines that were set up before layouts existed: keep the side.
+		switch legacyEdge {
+		case "left":
+			return []string{names[0], me}, true
+		case "right":
+			return []string{me, names[0]}, true
+		}
+	}
+	return append(out, missing...), true
+}
+
+// Beyond returns the first machine past side ("left" or "right") of from in
+// order for which online reports true, skipping the ones that are not.
+func Beyond(order []string, online func(string) bool, from, side string) (string, bool) {
+	i := slices.Index(order, from)
+	if i < 0 {
+		return "", false
+	}
+	step := 1
+	if side == "left" {
+		step = -1
+	} else if side != "right" {
+		return "", false
+	}
+	for j := i + step; j >= 0 && j < len(order); j += step {
+		if online(order[j]) {
+			return order[j], true
+		}
+	}
+	return "", false
+}
+
+// Neighbors reports whether any machine sits left or right of me in order,
+// online or not: where this machine's screen has a shared edge at all.
+func Neighbors(order []string, me string) (left, right bool) {
+	i := slices.Index(order, me)
+	if i < 0 {
+		return false, false
+	}
+	return i > 0, i < len(order)-1
+}
+
+// Opposite returns the other side.
+func Opposite(side string) string {
+	switch side {
+	case "left":
+		return "right"
+	case "right":
+		return "left"
+	}
+	return ""
+}

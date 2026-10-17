@@ -41,50 +41,73 @@ MWB Linux listens and dials at the same time. The first authenticated control
 connection wins, which keeps reconnects quick after either machine sleeps or
 restarts.
 
-### Linux peers
+### Linux groups
 
-With `peer = "linux"` the other end is another mwb-linux, not PowerToys, and
-six things change. A PowerToys peer (`peer = "windows"`, the default) gets
-none of them.
+With `peer = "linux"` the other ends are mwb-linux machines, not PowerToys,
+and the machine joins a group of two to six (`internal/group`). A PowerToys
+peer (`peer = "windows"`, the default) gets none of this and keeps the
+original single-connection loop in `cmd/mwb/main.go`.
 
-1. **Pairing.** PowerToys keeps one socket per machine and closes the duplicate.
-   Two mwb-linux peers have nobody doing that job. Under first-wins, each can
-   keep a different socket and then wait forever on one the other never reads.
-   `network.SelectLinuxPeer` makes both ends keep the connection dialed by the
-   machine whose name sorts first. If that direction cannot connect (for
-   example, a firewall on one side), the other connection is used after
-   `LinuxPeerGrace` (3s). Names must differ. Equal names fall back to
-   first-wins with a warning.
-2. **Idle timeout.** A Linux-peer control connection that has been silent for
-   `LinuxPeerIdleTimeout` (20s) is dropped and redialed. Heartbeats run every
-   5s, so this only fires on a dead or mismatched link.
-3. **Cursor ownership.** PowerToys works out where the cursor is from its own
-   machine matrix. A Linux peer can't, so the capturer tells it:
-   - It sends `MachineSwitched` when the cursor crosses to the peer.
-   - It sends `HideMouse` when it takes the cursor back. That covers the
-     virtual-edge return, Ctrl+Alt+Right, and absolute-pointer recovery.
-   - On `HideMouse`, the receiver isolates and forwards its own local input,
-     so both machines' keyboards and mice follow one shared cursor.
-   - The far-edge `AcceptsActivation` guard exists for PowerToys matrices and
-     is skipped.
-   - Inbound keys are decoded positionally (`us` profile), because a Linux
-     sender encodes physical key positions.
-4. **Two-way default.** An unset `bidirectional` means on, because two
-   receive-only machines can never move the cursor.
-5. **Wait/Connect.** With no `host`, the machine never dials. Its listeners
-   use `AcceptLocalNetwork`, which lets any RFC1918/ULA or link-local source
-   attempt the handshake (never loopback or a routable address). That is the
-   same set `isAllowedPeer` already admits beyond a configured host. An empty
-   `allowedHost` still means no inbound at all. File copies go to the address
-   the peer connected from (`Conn.RemoteHost`).
-6. **Settings exchange.** After connecting, each peer sends one
-   `LinuxPeerInfo` packet (type 100, a plain 32-byte packet that reuses the
-   MOUSEDATA payload). It carries the screen size measured with xrandr (never
-   the 1920x1080 fallback), the side the receiver sits on, and whether this
-   machine forwards its input. The receiver uses the size instead of
-   `remote_width`/`remote_height`, and reports a side clash or that neither
-   machine shares. An older mwb-linux ignores the packet; PowerToys never
-   receives it.
+1. **Membership.** Every member connects to every other one, one `link` per
+   member. The listener's connections are routed to links by the name in
+   the handshake. `host` is only a bootstrap: once its owner is known, that
+   member's link dials it. Each member sends a group document listing the
+   members it knows and the address it reaches each at, so a machine that
+   was given one address learns the rest. Learned addresses persist in
+   `$XDG_STATE_HOME/mwb/members.json`. A connection that reaches a different
+   machine than its link expects is closed.
+2. **Pairing.** For each pair both machines dial, and both keep the
+   connection dialed by the machine whose name sorts first
+   (`network.PreferOutbound`), falling back to the other after
+   `LinuxPeerGrace` (3s), as `network.SelectLinuxPeer` does for one pair.
+3. **Idle timeout.** A link silent for `LinuxPeerIdleTimeout` (20s) is
+   dropped and redialed. Heartbeats run every 5s.
+4. **Group document.** JSON (`group.Info`), split into 12-byte chunks in
+   `LinuxGroup` packets (type 101, plain 32-byte packets reusing the
+   MOUSEDATA payload; `protocol.GroupChunks` and `GroupAssembler`). It holds
+   the layout with its age in seconds, the members, the sender's screen size
+   measured with xrandr, whether it shares, its control port, and the
+   highest cursor epoch it has seen. Sent on connect and when this machine
+   changes the layout.
+5. **Layout.** The left-to-right order of machine names, `layout` in the
+   config. The most recent choice wins (`Layout.Newer`: later time, then
+   lower author name), so every machine converges on one. Ages, not
+   timestamps, travel on the wire, so clocks need not agree. Members missing
+   from the order are appended in name order (`Complete`), which every
+   machine does identically; adding another machine is a new choice and is
+   announced, adding only itself is not. A pair with no layout places its
+   peer by the old `edge`. Adopted layouts are saved with `SaveLayout`.
+6. **One cursor.** The cursor is on one machine at a time. When a machine's
+   input moves it across an edge (`capture.Navigator`), that machine sends a
+   `LinuxCursor` packet (type 102) to every member: the target's name hash,
+   the side it enters from, its height, and an epoch one above the highest
+   seen. Everyone follows the highest epoch (ties: lower announcer name), so
+   a late announcement changes nothing. The target releases its local input
+   (`Arrive`); every other sharing machine isolates its input and forwards it
+   to the target (`Follow`), starting at the announced entry point. The
+   driving machine walks its virtual cursor across remote screens and hands
+   over at each far edge (`crossRemoteLocked`), skipping offline members;
+   the ends of the row are walls. The capturer watches only the sides that
+   have a neighbour (two XWayland edge windows on Wayland), and is restarted
+   when a new layout changes them.
+7. **Departures.** When a link ends, keys and buttons it injected are
+   released (`network.HeldInput`). If its machine had the cursor, the
+   location becomes unknown and each machine takes its own cursor back
+   (`Lost`); the next crossing announces a new location.
+8. **Two-way default.** An unset `bidirectional` means on.
+9. **Wait/Connect.** With no `host`, the machine never bootstraps. Its
+   listeners use `AcceptLocalNetwork`, which lets any RFC1918/ULA or
+   link-local source attempt the handshake (never loopback or a routable
+   address). That is the same set `isAllowedPeer` already admits beyond a
+   configured host. File copies go to each member at the address it
+   connected from (`Conn.RemoteHost`).
+10. **Clipboard.** One manager polls the local clipboard and sends to every
+    member online (`clipboard.NewGroupManager`).
+11. **Keyboard.** Inbound keys are decoded positionally (`us` profile),
+    because a Linux sender encodes physical key positions.
+
+Older mwb-linux builds ignore types 101 and 102, so they connect but cannot
+take part; the status file marks such a member `current: false`.
 
 ## Encryption and handshake
 
@@ -205,8 +228,12 @@ These rules prevent failures that are difficult to recover from or reproduce:
   compares names exactly as they appear on the wire, with trailing padding
   trimmed. Any change to the rule must stay symmetric:
   `preferOutbound(a, b) != preferOutbound(b, a)`.
-- Ownership packets (`notifyPeer`) and `LinuxPeerInfo` are sent only for a
-  Linux peer. The PowerToys path must send exactly the packets it always has.
+- Group packets (`LinuxGroup`, `LinuxCursor`) are sent only between
+  mwb-linux machines. The PowerToys path must send exactly the packets it
+  always has.
+- Every member must decide layout and cursor conflicts the same way:
+  `Layout.Newer` and the epoch rule in `applyCursor` depend only on values
+  all members see, never on which machine evaluates them.
 - `AcceptLocalNetwork` must never widen beyond `isLocalNetwork`. Loopback
   stays refused, and an empty host stays fail-closed.
 
@@ -220,6 +247,7 @@ Tests named after these invariants live beside the relevant package code.
 | `internal/capture` | X11 edge detection, evdev capture, and device isolation |
 | `internal/clipboard` | Text, image, and file-selection clipboard handling |
 | `internal/config` | TOML configuration |
+| `internal/group` | Linux groups: membership, layout sync, cursor location |
 | `internal/filetransfer` | File-channel framing and safe receive/write logic |
 | `internal/input` | uinput devices and keyboard mappings |
 | `internal/network` | TCP connections, handshakes, routing, and heartbeats |

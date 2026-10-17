@@ -35,6 +35,8 @@ MANAGED: dict[str, type] = {
     "peer": str,
     "edge": str,
     "edge_changed": int,  # when edge was chosen, Unix seconds; mwb keeps two peers' sides mirrored
+    "layout": list,  # Linux groups: machine names left to right; mwb keeps it in step across the group
+    "layout_changed": int,  # when layout was chosen, Unix seconds
     "bidirectional": bool,
     "clipboard": bool,
     "file_transfer": bool,
@@ -49,6 +51,8 @@ DEFAULTS: dict[str, object] = {
     "peer": "windows",
     "edge": "left",
     "edge_changed": 0,
+    "layout": [],
+    "layout_changed": 0,
     "bidirectional": False,
     "clipboard": True,
     "file_transfer": True,
@@ -57,6 +61,7 @@ DEFAULTS: dict[str, object] = {
 }
 
 NAME_MAX = 15  # the client truncates longer names; the wire field is 15 bytes
+GROUP_MAX = 6  # machines in one group, this one included
 KEY_MIN = 16   # PowerToys refuses shorter security keys
 
 DEFAULT_PATH = os.path.join(
@@ -136,8 +141,36 @@ def _parse_basic_string(s: str, i: int) -> tuple[str, int]:
     raise ConfigError("unterminated string")
 
 
+def _parse_string_array(text: str) -> tuple[list[str], int]:
+    """Parse a one-line array of strings starting at text[0] == "["."""
+    out: list[str] = []
+    i = 1
+    expect_item = True
+    while i < len(text):
+        c = text[i]
+        if c in " \t":
+            i += 1
+        elif c == "]":
+            return out, i + 1
+        elif c == "," and not expect_item:
+            expect_item = True
+            i += 1
+        elif expect_item and c in "\"'":
+            value, end = _parse_value(text[i:])
+            if not isinstance(value, str):
+                raise ConfigError("only strings are supported in this list")
+            out.append(value)
+            i += end
+            expect_item = False
+        else:
+            raise ConfigError("only a one-line list of strings is supported here")
+    raise ConfigError("unterminated list")
+
+
 def _parse_value(text: str) -> tuple[object, int]:
-    """Parse a single-line scalar TOML value. Returns (value, end index)."""
+    """Parse a single-line TOML value. Returns (value, end index)."""
+    if text.startswith("["):
+        return _parse_string_array(text)
     if text.startswith('"""') or text.startswith("'''"):
         raise ConfigError("multi-line strings are not supported for this setting")
     if text.startswith('"'):
@@ -250,6 +283,8 @@ def parse(text: str) -> Document:
 # --- value formatting --------------------------------------------------------
 
 def _format_value(value: object) -> str:
+    if isinstance(value, list):
+        return "[" + ", ".join(_format_value(str(v)) for v in value) + "]"
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, int):
@@ -381,6 +416,10 @@ def validate(values: dict[str, object]) -> dict[str, str]:
         problems["peer"] = "Choose Windows or Linux."
     if values.get("edge") not in ("left", "right"):
         problems["edge"] = "Choose left or right."
+    layout = values.get("layout") or []
+    if not isinstance(layout, list) or len(layout) > GROUP_MAX or len(set(layout)) != len(layout) \
+            or any(not isinstance(n, str) or not n or len(n.encode("utf-8")) > NAME_MAX for n in layout):
+        problems["layout"] = f"The screen order needs up to {GROUP_MAX} different computer names."
     for k in ("remote_width", "remote_height"):
         v = values.get(k)
         if not isinstance(v, int) or isinstance(v, bool) or not 200 <= v <= 16384:

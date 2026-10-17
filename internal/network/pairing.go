@@ -120,3 +120,10 @@ func recvEither(outgoing, incoming <-chan *Conn) (*Conn, bool, bool) {
 	}
 	return nil, false, false
 }
+
+// PreferOutbound reports whether the local machine should keep the
+// connection it dialed rather than the one the remote dialed, by the same
+// rule SelectLinuxPeer uses; decidable is false when the names are equal.
+func PreferOutbound(localName, remoteName string) (prefer, decidable bool) {
+	return preferOutbound(localName, remoteName)
+}
