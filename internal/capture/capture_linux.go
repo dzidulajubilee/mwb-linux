@@ -99,11 +99,15 @@ type Capturer struct {
 	remoteH       int32                     // detected remote screen height
 	accelMult     float64                   // scaling applied to raw evdev deltas (config: accel_multiplier)
 	accel         pointerAccel              // speed-dependent gain on top of accelMult
-	edgeY         int32                     // Y position where cursor left local screen
-	canSwitch     bool                      // true once cursor has been away from edge since activation
-	canReturn     bool                      // true once cursor has moved away from the remote return edge
-	hotkeyCtrl    bool                      // tracks Ctrl key state for hotkey detection
-	hotkeyAlt     bool                      // tracks Alt key state for hotkey detection
+	// Motion of the mouse report being read, sent as one move when the
+	// report ends (SYN_REPORT) rather than one per axis.
+	pendDX, pendDY int32
+	out            *outbox // nil until Run: sends then happen inline (tests)
+	edgeY          int32   // Y position where cursor left local screen
+	canSwitch      bool    // true once cursor has been away from edge since activation
+	canReturn      bool    // true once cursor has moved away from the remote return edge
+	hotkeyCtrl     bool    // tracks Ctrl key state for hotkey detection
+	hotkeyAlt      bool    // tracks Alt key state for hotkey detection
 	// OnActivated runs whenever this capturer transitions from remote control
 	// back to local ownership, including its own virtual-edge return path.
 	OnActivated func()
@@ -516,7 +520,15 @@ func (c *Capturer) Run() error {
 	}
 	slog.Info("found input devices", "count", len(devices))
 
-	c.wg.Add(2)
+	out := newOutbox()
+	c.mu.Lock()
+	c.out = out
+	c.mu.Unlock()
+	c.wg.Add(3)
+	go func() {
+		defer c.wg.Done()
+		out.run(c.stopCh)
+	}()
 	go func() {
 		defer c.wg.Done()
 		c.pollCursorEdge()
@@ -1195,6 +1207,12 @@ func (c *Capturer) handleEvent(ev inputEvent) {
 	}
 
 	switch ev.Type {
+	case evSyn:
+		if ev.Code == synReport {
+			c.mu.Lock()
+			c.flushMotionLocked()
+			c.mu.Unlock()
+		}
 	case uint16(evAbsType):
 		// Raw absolute movement cannot be forwarded. Return local control
 		// explicitly without altering the normal mouse-switching paths.
@@ -1230,16 +1248,32 @@ func (c *Capturer) handleRel(ev inputEvent) {
 	switch ev.Code {
 	case relX:
 		gain := c.accelMult * c.accel.factorFor(t, ev.Value, 0)
-		c.moveRemoteLocked(applyAcceleration(ev.Value, gain), 0)
+		c.pendDX += applyAcceleration(ev.Value, gain)
 	case relY:
 		gain := c.accelMult * c.accel.factorFor(t, 0, ev.Value)
-		c.moveRemoteLocked(0, applyAcceleration(ev.Value, gain))
+		c.pendDY += applyAcceleration(ev.Value, gain)
 	case relWheel:
+		c.flushMotionLocked()
 		c.sendMouseLocked(0, 0, ev.Value*120, protocol.WM_MOUSEWHEEL)
 	case relHWheel:
 		// Both positive to the right.
+		c.flushMotionLocked()
 		c.sendMouseLocked(0, 0, ev.Value*120, protocol.WM_MOUSEHWHEEL)
 	}
+}
+
+// flushMotionLocked moves the remote cursor by the motion gathered from the
+// current mouse report, as one move. c.mu must be held.
+func (c *Capturer) flushMotionLocked() {
+	dx, dy := c.pendDX, c.pendDY
+	if dx == 0 && dy == 0 {
+		return
+	}
+	c.pendDX, c.pendDY = 0, 0
+	if c.active {
+		return // the cursor came back meanwhile
+	}
+	c.moveRemoteLocked(dx, dy)
 }
 
 // returnLocalLocked brings the cursor back to this machine after the virtual
@@ -1247,6 +1281,7 @@ func (c *Capturer) handleRel(ev inputEvent) {
 // held; it is released and re-acquired.
 func (c *Capturer) returnLocalLocked(announce func()) {
 	c.active = true
+	c.pendDX, c.pendDY = 0, 0
 	onActivated := c.OnActivated
 	c.switchSent = time.Time{}
 	c.lastActivated = time.Now()
@@ -1362,6 +1397,7 @@ func (c *Capturer) handleKey(ev inputEvent) {
 			// Use current virtual cursor position so clicks register at the
 			// correct location on Windows, not always at top-left (0,0).
 			c.mu.Lock()
+			c.flushMotionLocked()
 			absX := int32(float64(c.remoteX) / float64(c.remoteW) * 65535)
 			absY := int32(float64(c.remoteY) / float64(c.remoteH) * 65535)
 			c.mu.Unlock()
@@ -1405,9 +1441,27 @@ func (c *Capturer) handleKey(ev inputEvent) {
 	}
 	pkt.Keyboard.WVk = vk
 	pkt.Keyboard.DwFlags = dwFlags
+	c.post(pkt, conn, nil, false)
+}
 
-	if err := conn.SendPacket(pkt); err != nil {
-		slog.Debug("send keyboard failed", "err", err)
+// post sends pkt to conn (or through send), via the outbox once Run has
+// started it. move marks a pointer move, which a newer one may replace.
+func (c *Capturer) post(pkt *protocol.Packet, conn *network.Conn, send func(*protocol.Packet) error, move bool) {
+	c.mu.Lock()
+	out := c.out
+	c.mu.Unlock()
+	if out != nil {
+		out.put(pkt, conn, send, move)
+		return
+	}
+	if send == nil {
+		if conn == nil {
+			return
+		}
+		send = conn.SendPacket
+	}
+	if err := send(pkt); err != nil {
+		slog.Debug("send input failed", "type", pkt.Type, "err", err)
 	}
 }
 
@@ -1427,14 +1481,29 @@ var mouseButtons = map[uint16]mouseButton{
 
 func (c *Capturer) sendMouse(x, y, wheelDelta, flags int32) {
 	c.mu.Lock()
-	conn, send := c.conn, c.sendFn
+	conn, send, out := c.conn, c.sendFn, c.out
 	c.mu.Unlock()
-	deliverMouse(conn, send, x, y, wheelDelta, flags)
+	queueMouse(out, conn, send, x, y, wheelDelta, flags)
 }
 
 // sendMouseLocked sends a mouse packet (caller must hold c.mu).
 func (c *Capturer) sendMouseLocked(x, y, wheelDelta, flags int32) {
-	deliverMouse(c.conn, c.sendFn, x, y, wheelDelta, flags)
+	queueMouse(c.out, c.conn, c.sendFn, x, y, wheelDelta, flags)
+}
+
+// queueMouse sends one mouse packet through out, or inline when out is nil.
+func queueMouse(out *outbox, conn *network.Conn, send func(*protocol.Packet) error, x, y, wheelDelta, flags int32) {
+	if out == nil {
+		deliverMouse(conn, send, x, y, wheelDelta, flags)
+		return
+	}
+	pkt := &protocol.Packet{Type: protocol.Mouse}
+	if conn != nil {
+		pkt.Src, pkt.Des = conn.MachineID, conn.RemoteID
+	}
+	pkt.Mouse.X, pkt.Mouse.Y = x, y
+	pkt.Mouse.WheelDelta, pkt.Mouse.DwFlags = wheelDelta, flags
+	out.put(pkt, conn, send, flags == protocol.WM_MOUSEMOVE)
 }
 
 // deliverMouse sends one mouse packet through send, or conn when send is nil.

@@ -435,7 +435,8 @@ func TestVirtualEdgeReturnTellsLinuxPeer(t *testing.T) {
 
 	// Cursor is on the peer near its right edge (the shared one for "left").
 	c.remoteX, c.remoteY, c.canReturn = 1919, 540, true
-	c.handleRel(inputEvent{Type: evRel, Code: relX, Value: 5})
+	c.handleRel(inputEvent{Sec: 1, Type: evRel, Code: relX, Value: 5})
+	c.handleEvent(inputEvent{Sec: 1, Type: evSyn, Code: synReport}) // the report ends
 
 	if !c.IsActive() || grabbed() != 0 {
 		t.Fatal("virtual edge return did not restore local input")
@@ -591,5 +592,28 @@ func TestDeviceReturningUnderSamePathIsReopened(t *testing.T) {
 	c.refreshDevices()
 	if f := tracked(); f == nil || f == first {
 		t.Fatal("the returning device was not opened again")
+	}
+}
+
+// One mouse report moving on both axes becomes one move, sent when the
+// report ends, not one move per axis.
+func TestMouseReportIsOneMove(t *testing.T) {
+	c := New(nil, ScreenInfo{Width: 1920, Height: 1080}, "left")
+	c.active, c.remoteW, c.remoteH, c.accelMult = false, 1920, 1080, 1
+	c.remoteX, c.remoteY = 500, 500
+	var moves []protocol.MouseData
+	c.sendFn = func(p *protocol.Packet) error { moves = append(moves, p.Mouse); return nil }
+
+	c.handleEvent(inputEvent{Sec: 1, Type: evRel, Code: relX, Value: 3})
+	c.handleEvent(inputEvent{Sec: 1, Type: evRel, Code: relY, Value: 4})
+	if len(moves) != 0 {
+		t.Fatalf("sent %d moves before the report ended", len(moves))
+	}
+	c.handleEvent(inputEvent{Type: evSyn, Code: synReport})
+	if len(moves) != 1 {
+		t.Fatalf("one report sent %d moves, want 1", len(moves))
+	}
+	if c.remoteX != 503 || c.remoteY != 504 {
+		t.Fatalf("cursor at %d,%d, want 503,504", c.remoteX, c.remoteY)
 	}
 }

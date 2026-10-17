@@ -52,6 +52,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it as well.
 
 ### Fixed
+- Smoother pointer on the other computer, especially over Wi-Fi. Each
+  mouse report now travels as one move instead of one per axis (half the
+  packets), sending never holds up reading the mouse, and when the network
+  stalls the pointer jumps to where the mouse is instead of replaying the
+  backlog in slow motion. The receiving side writes each move to its
+  virtual mouse in one system call.
 - When a Linux machine drops off the network while the pointer is on it,
   the others notice within 5 seconds instead of 20 and give you back your
   keyboard and mouse. Linux machines now exchange a heartbeat every second;
