@@ -37,6 +37,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it as well.
 
 ### Fixed
+- In a Linux group on Wayland the cursor never crossed from a machine: its
+  edge windows were never re-armed after connecting.
+- A machine with an extended desktop (a laptop with a second monitor)
+  measured only its first monitor, so the edge it watched and the size it
+  reported to the others were wrong. It now uses the whole desktop.
 - Copying a file to a Linux machine whose configured address had gone stale
   failed with "no route to host" even though it was connected: files went to
   `host` instead of the address the connection actually uses. They now go to

@@ -782,8 +782,8 @@ func (c *Capturer) crossLocalEdge(side string, x, y int32) {
 func (c *Capturer) trackInward(dx int32) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.edge == nil || c.canSwitch {
-		return
+	if (c.edge == nil && len(c.edges) == 0) || c.canSwitch {
+		return // edge windows are only used on Wayland; X11 polling re-arms itself
 	}
 	switch c.edgeSide {
 	case "right":
