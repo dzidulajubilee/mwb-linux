@@ -318,8 +318,9 @@ shared key. Learned addresses are kept in `~/.local/state/mwb/members.json`.
 Why `peer = "linux"` matters: each machine listens and dials at the same time.
 PowerToys closes duplicate connections itself. mwb-linux machines have no
 such referee, so for each pair they keep the connection dialed by the machine
-whose name sorts first. A link that goes quiet for 20 seconds is dropped and
-redialed. The group messages are an mwb-linux addition and are never sent to
+whose name sorts first. A link that goes quiet for 5 seconds is dropped and
+redialed, and if the pointer was on that machine, your keyboard and mouse
+come back to you. The group messages are an mwb-linux addition and are never sent to
 PowerToys.
 
 ## Settings window

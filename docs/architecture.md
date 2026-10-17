@@ -55,13 +55,16 @@ original single-connection loop in `cmd/mwb/main.go`.
    members it knows and the address it reaches each at, so a machine that
    was given one address learns the rest. Learned addresses persist in
    `$XDG_STATE_HOME/mwb/members.json`. A connection that reaches a different
-   machine than its link expects is closed.
+   machine than its link expects is handed to that machine's link.
 2. **Pairing.** For each pair both machines dial, and both keep the
    connection dialed by the machine whose name sorts first
    (`network.PreferOutbound`), falling back to the other after
    `LinuxPeerGrace` (3s), as `network.SelectLinuxPeer` does for one pair.
-3. **Idle timeout.** A link silent for `LinuxPeerIdleTimeout` (20s) is
-   dropped and redialed. Heartbeats run every 5s.
+3. **Idle timeout.** A link silent for `LinuxPeerIdleTimeout` (5s) is
+   dropped and redialed. Heartbeats run every second on these links, and
+   only heartbeats sent to everyone are answered, so answers are never
+   echoed back. A machine whose input drives a member that vanishes takes
+   its own cursor back when the link drops.
 4. **Group document.** JSON (`group.Info`), split into 12-byte chunks in
    `LinuxGroup` packets (type 101, plain 32-byte packets reusing the
    MOUSEDATA payload; `protocol.GroupChunks` and `GroupAssembler`). It holds

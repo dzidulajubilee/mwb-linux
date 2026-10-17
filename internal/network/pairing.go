@@ -31,10 +31,12 @@ const (
 	LinuxPeerGrace = 3 * time.Second
 
 	// LinuxPeerIdleTimeout drops a Linux-peer control connection that has
-	// been silent this long. Both ends send a heartbeat every 5s and answer
-	// each other's, so a healthy link is never quiet for more than a few
-	// seconds. It is a backstop in case pairing still ends up mismatched.
-	LinuxPeerIdleTimeout = 20 * time.Second
+	// been silent this long. Both ends send a heartbeat every second on such
+	// a link (see heartbeatEvery) and answer each other's, so a healthy link
+	// is never quiet for more than a second or so. When a machine vanishes
+	// while it has the cursor, this is how long the others wait before they
+	// take their own keyboard and mouse back.
+	LinuxPeerIdleTimeout = 5 * time.Second
 )
 
 // preferOutbound reports whether the local machine should keep its own

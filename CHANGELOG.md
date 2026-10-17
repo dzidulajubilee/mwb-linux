@@ -52,6 +52,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it as well.
 
 ### Fixed
+- When a Linux machine drops off the network while the pointer is on it,
+  the others notice within 5 seconds instead of 20 and give you back your
+  keyboard and mouse. Linux machines now exchange a heartbeat every second;
+  PowerToys connections are unchanged.
 - A Bluetooth mouse or keyboard that reconnects, for example after the
   screen turns off, works with mwb again. It often comes back under the
   same device path, and mwb kept the old, closed device: the mouse moved

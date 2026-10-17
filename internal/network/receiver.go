@@ -12,10 +12,21 @@ import (
 	"github.com/lucky-verma/mwb-linux/internal/protocol"
 )
 
+// heartbeatEvery is how often a heartbeat goes out on conn. A link with an
+// idle timeout (a Linux peer) sends five per timeout, so a dead peer is
+// noticed quickly and a busy link is never mistaken for one. PowerToys links
+// keep the interval MWB has always used.
+func heartbeatEvery(conn *Conn) time.Duration {
+	if conn.idleTimeout > 0 {
+		return conn.idleTimeout / 5
+	}
+	return 5 * time.Second
+}
+
 // startHeartbeat sends periodic heartbeats to keep the connection alive.
 // Windows MWB drops clients that don't send heartbeats within ~10s.
 func startHeartbeat(conn *Conn, stop chan struct{}) {
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(heartbeatEvery(conn))
 	defer ticker.Stop()
 	for {
 		select {
