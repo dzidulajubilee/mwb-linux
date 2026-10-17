@@ -37,6 +37,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it as well.
 
 ### Fixed
+- Copying a file to a Linux machine whose configured address had gone stale
+  failed with "no route to host" even though it was connected: files went to
+  `host` instead of the address the connection actually uses. They now go to
+  the live connection's address.
+- A file received from the other computer is offered on the clipboard in
+  every format Linux file managers paste from (GNOME, MATE/Caja, uri-list,
+  plain path), instead of one guessed from `XDG_CURRENT_DESKTOP`, which is
+  often missing for a background service. Paste now works in Caja, Thunar,
+  Dolphin and Nautilus alike, and files copied in Caja are sent.
 - The release `.deb` built by GoReleaser now includes `mwb-gui`, its menu
   entry and the tray icon's login entry, as the README describes, and
   recommends the GTK 4 Python packages it needs.

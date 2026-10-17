@@ -56,6 +56,9 @@ func clipboardFileTarget(targets string) string {
 	if strings.Contains(targets, gnomeFileTarget) {
 		return gnomeFileTarget
 	}
+	if strings.Contains(targets, mateFileTarget) {
+		return mateFileTarget // Caja
+	}
 	if strings.Contains(targets, uriListTarget) {
 		return uriListTarget
 	}

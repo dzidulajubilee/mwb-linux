@@ -26,7 +26,7 @@ func TestLocalAddressStrings(t *testing.T) {
 	}
 }
 
-func TestPeerHostPrefersConfigured(t *testing.T) {
+func TestPeerHostFallsBackToConfigured(t *testing.T) {
 	if got := peerHost("10.0.0.2", nil); got != "10.0.0.2" {
 		t.Fatalf("peerHost = %q", got)
 	}

@@ -7,14 +7,18 @@ import (
 	"github.com/lucky-verma/mwb-linux/internal/network"
 )
 
-// peerHost is where to dial the peer's file channel: the configured host, or,
-// for a Linux peer waiting without one, the address the other machine
-// connected from.
+// peerHost is where to dial the peer's file channel: the address the live
+// control connection uses, which reaches the peer by definition. The
+// configured host is only a fallback: it can be stale (the peer moved to
+// another network and dialed in from its new address) or name a waiting
+// machine's other interface.
 func peerHost(configured string, conn *network.Conn) string {
-	if configured != "" {
-		return configured
+	if conn != nil {
+		if h := conn.RemoteHost(); h != "" {
+			return h
+		}
 	}
-	return conn.RemoteHost()
+	return configured
 }
 
 // localAddresses lists this machine's local-network addresses, the ones the

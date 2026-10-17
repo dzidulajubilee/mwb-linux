@@ -117,12 +117,19 @@ func removeStage(path string) {
 }
 
 // setLocalFileClipboard makes Linux file managers see the staged file as a
-// copied file. xclip remains the X11 selection owner after its parent exits;
-// native Wayland desktops receive the same selection through XWayland.
+// copied file, in every format they read (see offerFile). Native Wayland
+// desktops receive the selection through XWayland. If this process cannot
+// own the selection itself, xclip offers the one format the desktop most
+// likely wants and stays the owner after its parent exits.
 func (m *Manager) setLocalFileClipboard(path string) error {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return err
+	}
+	if err := offerFile(m.display, abs); err == nil {
+		return nil
+	} else {
+		slog.Warn("could not offer the file in every clipboard format; falling back to xclip", "err", err)
 	}
 	target := preferredFileClipboardTarget(os.Getenv("XDG_CURRENT_DESKTOP"))
 	payload := fileClipboardPayload(abs, target)
@@ -143,7 +150,10 @@ func (m *Manager) setLocalFileClipboard(path string) error {
 
 func preferredFileClipboardTarget(desktop string) string {
 	desktop = strings.ToLower(desktop)
-	for _, family := range []string{"gnome", "unity", "cinnamon", "mate"} {
+	if strings.Contains(desktop, "mate") {
+		return mateFileTarget
+	}
+	for _, family := range []string{"gnome", "unity", "cinnamon"} {
 		if strings.Contains(desktop, family) {
 			return gnomeFileTarget
 		}
@@ -153,7 +163,7 @@ func preferredFileClipboardTarget(desktop string) string {
 
 func fileClipboardPayload(path, target string) string {
 	uri := (&url.URL{Scheme: "file", Path: path}).String()
-	if target == gnomeFileTarget {
+	if target == gnomeFileTarget || target == mateFileTarget {
 		// Nautilus rejects a trailing newline because it becomes an empty URI
 		// entry. Its own serializer emits exactly "copy\n<uri>".
 		return "copy\n" + uri
