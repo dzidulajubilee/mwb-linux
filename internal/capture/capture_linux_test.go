@@ -5,7 +5,9 @@ package capture
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -536,5 +538,58 @@ func TestSideButtonsAndTiltWheelAreForwarded(t *testing.T) {
 		if got[i].DwFlags != w.flags || got[i].WheelDelta != w.data {
 			t.Errorf("packet %d: flags %#x data %d, want %#x %d", i, got[i].DwFlags, got[i].WheelDelta, w.flags, w.data)
 		}
+	}
+}
+
+// A device that goes away and comes back under the same /dev/input path, as a
+// Bluetooth mouse does after the screen sleeps, is opened again on the next
+// rescan instead of being kept as a closed file.
+func TestDeviceReturningUnderSamePathIsReopened(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "event24")
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	connect := func() *os.File { // a writer keeps the reader from seeing EOF
+		w, err := os.OpenFile(path, os.O_RDWR, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return w
+	}
+	c := New(nil, ScreenInfo{Width: 1920, Height: 1080}, "left")
+	c.findDevicesFn = func() ([]string, error) { return []string{path}, nil }
+	defer c.Stop()
+	tracked := func() *os.File {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if d := c.devices[path]; d != nil {
+			return d.file
+		}
+		return nil
+	}
+	waitFor := func(what string, ok func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(2 * time.Second); !ok(); {
+			if time.Now().After(deadline) {
+				t.Fatal(what)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	w := connect()
+	c.refreshDevices()
+	first := tracked()
+	if first == nil {
+		t.Fatal("device not tracked")
+	}
+	_ = w.Close() // the device goes away
+	waitFor("a vanished device stayed tracked", func() bool { return tracked() == nil })
+
+	w = connect() // and comes back at the same path
+	defer func() { _ = w.Close() }()
+	c.refreshDevices()
+	if f := tracked(); f == nil || f == first {
+		t.Fatal("the returning device was not opened again")
 	}
 }

@@ -516,10 +516,14 @@ func (c *Capturer) Run() error {
 	}
 	slog.Info("found input devices", "count", len(devices))
 
-	c.wg.Add(1)
+	c.wg.Add(2)
 	go func() {
 		defer c.wg.Done()
 		c.pollCursorEdge()
+	}()
+	go func() {
+		defer c.wg.Done()
+		c.watchDevices()
 	}()
 	for _, d := range devices {
 		c.addDevice(d)
@@ -542,13 +546,15 @@ func (c *Capturer) Run() error {
 // addDevice opens, classifies and starts monitoring one device node. Devices
 // that cannot be opened are skipped: /dev/input entries appear before udev has
 // applied permissions, and a node can vanish between listing and opening.
-func (c *Capturer) addDevice(path string) {
+//
+// It reports whether it added a keyboard, mouse or touchpad.
+func (c *Capturer) addDevice(path string) bool {
 	c.mu.Lock()
 	_, known := c.devices[path]
 	stopped := c.stopped
 	c.mu.Unlock()
 	if known || stopped {
-		return
+		return false
 	}
 
 	// O_NONBLOCK is what makes Stop() able to finish. Opened blocking, the fd is
@@ -559,7 +565,7 @@ func (c *Capturer) addDevice(path string) {
 	// poller, where Close() evicts pending reads, with no added input latency.
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return
+		return false
 	}
 	grabbable := isGrabTarget(f)
 	var tp *touchpad
@@ -578,12 +584,12 @@ func (c *Capturer) addDevice(path string) {
 	if c.stopped {
 		c.mu.Unlock()
 		_ = f.Close()
-		return
+		return false
 	}
 	if _, dup := c.devices[path]; dup {
 		c.mu.Unlock()
 		_ = f.Close()
-		return
+		return false
 	}
 	if c.devices == nil {
 		c.devices = make(map[string]*trackedDevice)
@@ -598,6 +604,7 @@ func (c *Capturer) addDevice(path string) {
 		defer c.wg.Done()
 		c.monitorDevice(f)
 	}()
+	return grabbable
 }
 
 // refreshDevices brings the tracked set in line with what is actually present
@@ -643,7 +650,38 @@ func (c *Capturer) refreshDevices() {
 		_ = f.Close()
 	}
 	for _, p := range paths {
-		c.addDevice(p)
+		if c.addDevice(p) {
+			slog.Info("input device connected", "device", p)
+		}
+	}
+}
+
+// deviceRescan is how often /dev/input is checked for keyboards and mice
+// that connected since the last look.
+const deviceRescan = 2 * time.Second
+
+// watchDevices picks up devices that appear while mwb runs, such as a
+// Bluetooth mouse reconnecting after the screen sleeps, and grabs them at
+// once if the cursor is on another machine. Without it, a device that
+// appeared while the cursor was here would be read only from the next
+// switch, and on Wayland, where re-arming an edge relies on reading the
+// mouse, that mouse alone could not cross.
+func (c *Capturer) watchDevices() {
+	t := time.NewTicker(deviceRescan)
+	defer t.Stop()
+	for {
+		select {
+		case <-c.stopCh:
+			return
+		case <-t.C:
+			if c.IsActive() {
+				c.grabMu.Lock()
+				c.refreshDevices()
+				c.grabMu.Unlock()
+			} else {
+				c.applyIsolation() // rescans, and grabs what is new
+			}
+		}
 	}
 }
 
@@ -1080,7 +1118,17 @@ func findInputDevices() ([]string, error) {
 }
 
 func (c *Capturer) monitorDevice(f *os.File) {
-	defer f.Close() //nolint:errcheck
+	defer func() {
+		// The device is gone (or mwb is stopping). Forget it, so that when
+		// it comes back, often under the same /dev/input path, the rescan
+		// opens it again instead of keeping this closed file.
+		c.mu.Lock()
+		if d := c.devices[f.Name()]; d != nil && d.file == f {
+			delete(c.devices, f.Name())
+		}
+		c.mu.Unlock()
+		_ = f.Close()
+	}()
 	slog.Debug("monitoring device", "path", f.Name())
 	buf := make([]byte, inputEventSize*32)
 	c.mu.Lock()

@@ -52,6 +52,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it as well.
 
 ### Fixed
+- A Bluetooth mouse or keyboard that reconnects, for example after the
+  screen turns off, works with mwb again. It often comes back under the
+  same device path, and mwb kept the old, closed device: the mouse moved
+  only the local pointer instead of crossing, and while the pointer was on
+  the other computer the touchpad looked frozen. mwb now forgets a device
+  that disappears and checks for new ones every 2 seconds, grabbing them
+  right away when the pointer is on another computer.
 - Two Linux machines no longer echo heartbeats back and forth. Each echo
   was answered again, so the traffic grew for as long as they stayed
   connected: mwb used 20–60% of a CPU core when idle, and a dropped
