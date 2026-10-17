@@ -319,6 +319,11 @@ func (h *Handler) keyCodeForPacket(kd protocol.KeyboardData) (uint16, bool) {
 		}
 		return input.KEY_LEFTALT, true
 	default:
+		if kd.DwFlags&protocol.LLKHF_EXTENDED != 0 {
+			if code, ok := input.ExtendedKeyCode(kd.WVk); ok {
+				return code, true
+			}
+		}
 		return input.VKToKeyCodeForLayout(kd.WVk, h.KeyboardLayout)
 	}
 }

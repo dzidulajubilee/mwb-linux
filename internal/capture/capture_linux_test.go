@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lucky-verma/mwb-linux/internal/input"
 	"github.com/lucky-verma/mwb-linux/internal/protocol"
 )
 
@@ -504,5 +505,36 @@ func TestYieldToPeerAfterStopDoesNothing(t *testing.T) {
 	c.YieldToPeer()
 	if !c.IsActive() || grabbed() != 0 {
 		t.Fatal("yield after Stop changed state")
+	}
+}
+
+// Side buttons, under either evdev name, and the tilt wheel reach the
+// other machine as MWB sends them: X buttons carry 1 or 2 in the mouse data.
+func TestSideButtonsAndTiltWheelAreForwarded(t *testing.T) {
+	c := New(nil, ScreenInfo{Width: 1920, Height: 1080}, "left")
+	c.active, c.remoteW, c.remoteH = false, 1920, 1080
+	var got []protocol.MouseData
+	c.sendFn = func(p *protocol.Packet) error { got = append(got, p.Mouse); return nil }
+
+	for _, code := range []uint16{input.BTN_SIDE, btnBack, input.BTN_EXTRA, btnForward} {
+		c.handleKey(inputEvent{Type: evKey, Code: code, Value: 1})
+		c.handleKey(inputEvent{Type: evKey, Code: code, Value: 0})
+	}
+	c.handleRel(inputEvent{Type: evRel, Code: relHWheel, Value: -1})
+
+	want := []struct{ flags, data int32 }{
+		{protocol.WM_XBUTTONDOWN, 1}, {protocol.WM_XBUTTONUP, 1},
+		{protocol.WM_XBUTTONDOWN, 1}, {protocol.WM_XBUTTONUP, 1},
+		{protocol.WM_XBUTTONDOWN, 2}, {protocol.WM_XBUTTONUP, 2},
+		{protocol.WM_XBUTTONDOWN, 2}, {protocol.WM_XBUTTONUP, 2},
+		{protocol.WM_MOUSEHWHEEL, -120},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("sent %d mouse packets, want %d", len(got), len(want))
+	}
+	for i, w := range want {
+		if got[i].DwFlags != w.flags || got[i].WheelDelta != w.data {
+			t.Errorf("packet %d: flags %#x data %d, want %#x %d", i, got[i].DwFlags, got[i].WheelDelta, w.flags, w.data)
+		}
 	}
 }

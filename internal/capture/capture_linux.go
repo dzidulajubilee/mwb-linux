@@ -26,9 +26,15 @@ const (
 	evKey = 0x01
 	evRel = 0x02
 
-	relX     = 0x00
-	relY     = 0x01
-	relWheel = 0x08
+	relX      = 0x00
+	relY      = 0x01
+	relHWheel = 0x06
+	relWheel  = 0x08
+
+	// Mice report their back/forward buttons as BTN_SIDE/BTN_EXTRA, or as
+	// BTN_BACK/BTN_FORWARD.
+	btnForward = 0x115
+	btnBack    = 0x116
 
 	inputEventSize = 24
 
@@ -1182,6 +1188,9 @@ func (c *Capturer) handleRel(ev inputEvent) {
 		c.moveRemoteLocked(0, applyAcceleration(ev.Value, gain))
 	case relWheel:
 		c.sendMouseLocked(0, 0, ev.Value*120, protocol.WM_MOUSEWHEEL)
+	case relHWheel:
+		// Both positive to the right.
+		c.sendMouseLocked(0, 0, ev.Value*120, protocol.WM_MOUSEHWHEEL)
 	}
 }
 
@@ -1296,37 +1305,11 @@ func (c *Capturer) handleKey(ev inputEvent) {
 	}
 
 	// Mouse buttons
-	if ev.Code >= 0x110 && ev.Code <= 0x112 {
-		if !c.IsActive() {
-			var flags int32
-			switch ev.Code {
-			case input.BTN_LEFT:
-				switch ev.Value {
-				case 1:
-					flags = protocol.WM_LBUTTONDOWN
-				case 0:
-					flags = protocol.WM_LBUTTONUP
-				default:
-					return
-				}
-			case input.BTN_RIGHT:
-				switch ev.Value {
-				case 1:
-					flags = protocol.WM_RBUTTONDOWN
-				case 0:
-					flags = protocol.WM_RBUTTONUP
-				default:
-					return
-				}
-			case input.BTN_MIDDLE:
-				switch ev.Value {
-				case 1:
-					flags = protocol.WM_MBUTTONDOWN
-				case 0:
-					flags = protocol.WM_MBUTTONUP
-				default:
-					return
-				}
+	if btn, ok := mouseButtons[ev.Code]; ok {
+		if !c.IsActive() && (ev.Value == 0 || ev.Value == 1) {
+			flags := btn.up
+			if ev.Value == 1 {
+				flags = btn.down
 			}
 			// Use current virtual cursor position so clicks register at the
 			// correct location on Windows, not always at top-left (0,0).
@@ -1334,7 +1317,7 @@ func (c *Capturer) handleKey(ev inputEvent) {
 			absX := int32(float64(c.remoteX) / float64(c.remoteW) * 65535)
 			absY := int32(float64(c.remoteY) / float64(c.remoteH) * 65535)
 			c.mu.Unlock()
-			c.sendMouse(absX, absY, 0, flags)
+			c.sendMouse(absX, absY, btn.data, flags)
 		}
 		return
 	}
@@ -1344,7 +1327,7 @@ func (c *Capturer) handleKey(ev inputEvent) {
 		return
 	}
 
-	vk, ok := input.KeyCodeToVK(ev.Code)
+	vk, extended, ok := input.KeyCodeToVKExtended(ev.Code)
 	if !ok {
 		return
 	}
@@ -1356,6 +1339,9 @@ func (c *Capturer) handleKey(ev inputEvent) {
 	var dwFlags int32
 	if ev.Value == 0 {
 		dwFlags = protocol.LLKHF_UP
+	}
+	if extended {
+		dwFlags |= protocol.LLKHF_EXTENDED
 	}
 
 	c.mu.Lock()
@@ -1375,6 +1361,20 @@ func (c *Capturer) handleKey(ev inputEvent) {
 	if err := conn.SendPacket(pkt); err != nil {
 		slog.Debug("send keyboard failed", "err", err)
 	}
+}
+
+// mouseButton is how one evdev button travels: its down and up messages, and
+// the mouse data that goes with them (which X button, as MWB sends it).
+type mouseButton struct{ down, up, data int32 }
+
+var mouseButtons = map[uint16]mouseButton{
+	input.BTN_LEFT:   {protocol.WM_LBUTTONDOWN, protocol.WM_LBUTTONUP, 0},
+	input.BTN_RIGHT:  {protocol.WM_RBUTTONDOWN, protocol.WM_RBUTTONUP, 0},
+	input.BTN_MIDDLE: {protocol.WM_MBUTTONDOWN, protocol.WM_MBUTTONUP, 0},
+	input.BTN_SIDE:   {protocol.WM_XBUTTONDOWN, protocol.WM_XBUTTONUP, 1},
+	btnBack:          {protocol.WM_XBUTTONDOWN, protocol.WM_XBUTTONUP, 1},
+	input.BTN_EXTRA:  {protocol.WM_XBUTTONDOWN, protocol.WM_XBUTTONUP, 2},
+	btnForward:       {protocol.WM_XBUTTONDOWN, protocol.WM_XBUTTONUP, 2},
 }
 
 func (c *Capturer) sendMouse(x, y, wheelDelta, flags int32) {

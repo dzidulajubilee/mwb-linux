@@ -12,12 +12,14 @@ import (
 type recordedTouchpad struct {
 	dx, dy  int32
 	scroll  int32
+	hscroll int32
 	buttons []int32
 }
 
-func (r *recordedTouchpad) touchpadMove(dx, dy int32)  { r.dx += dx; r.dy += dy }
-func (r *recordedTouchpad) touchpadScroll(ticks int32) { r.scroll += ticks }
-func (r *recordedTouchpad) touchpadButton(f int32)     { r.buttons = append(r.buttons, f) }
+func (r *recordedTouchpad) touchpadMove(dx, dy int32)   { r.dx += dx; r.dy += dy }
+func (r *recordedTouchpad) touchpadScroll(ticks int32)  { r.scroll += ticks }
+func (r *recordedTouchpad) touchpadHScroll(ticks int32) { r.hscroll += ticks }
+func (r *recordedTouchpad) touchpadButton(f int32)      { r.buttons = append(r.buttons, f) }
 
 // pad replays evdev frames into a touchpad with this laptop's 31 units/mm.
 type pad struct {
@@ -123,6 +125,22 @@ func TestTouchpadTwoFingerScrollFollowsFingers(t *testing.T) {
 	}
 	if r.dx != 0 || r.dy != 0 {
 		t.Fatalf("two-finger scroll moved the pointer (%d,%d)", r.dx, r.dy)
+	}
+}
+
+func TestTouchpadTwoFingerHorizontalScroll(t *testing.T) {
+	r := &recordedTouchpad{}
+	p := newPad(r)
+	p.down(btnToolDouble, 1500, 600)
+	for i := int32(1); i <= 20; i++ {
+		p.at(1500+i*31, 600+i*4, 10_000) // 20 mm right, drifting 2.6 mm down
+	}
+	p.up(btnToolDouble, 10_000)
+	if r.hscroll != -5 {
+		t.Fatalf("horizontal scroll = %d ticks for 20 mm right, want -5 (scroll left)", r.hscroll)
+	}
+	if r.scroll != 0 {
+		t.Fatalf("a horizontal swipe also scrolled vertically (%d)", r.scroll)
 	}
 }
 

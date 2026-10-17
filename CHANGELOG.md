@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- More of the keyboard and mouse reach the other computer: the mouse's
+  back and forward side buttons, the tilt wheel, two-finger sideways
+  scrolling on a touchpad, play/pause, next and previous track, the
+  browser, mail, calculator and sleep keys, F13–F24, and keypad Enter (sent
+  as Windows does, so it stays keypad Enter).
 - `interface` setting and a **Network** choice in mwb-gui: listen and
   connect on one network interface only (Wi-Fi, Ethernet, VPN), saved by
   name. The window lists every interface with its address, and the

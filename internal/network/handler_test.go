@@ -419,3 +419,18 @@ func TestLinuxPeerInfoReachesHook(t *testing.T) {
 		t.Fatal("an unknown-version packet reached the hook")
 	}
 }
+
+// Windows marks keypad Enter as an extended VK_RETURN; plain VK_RETURN is the
+// main Enter key.
+func TestHandleKeyboardKeypadEnter(t *testing.T) {
+	mock := &MockInputDevice{}
+	h := &Handler{Mouse: mock, Keyboard: mock}
+	pkt := &protocol.Packet{Type: protocol.Keyboard}
+	pkt.Keyboard.WVk = 0x0D
+	h.HandlePacket(pkt)
+	pkt.Keyboard.DwFlags = protocol.LLKHF_EXTENDED
+	h.HandlePacket(pkt)
+	if len(mock.KeyDowns) != 2 || mock.KeyDowns[0] != input.KEY_ENTER || mock.KeyDowns[1] != input.KEY_KPENTER {
+		t.Fatalf("got %v, want [KEY_ENTER KEY_KPENTER]", mock.KeyDowns)
+	}
+}

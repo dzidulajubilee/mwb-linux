@@ -63,7 +63,11 @@ type touchpad struct {
 	pressed       bool  // clickpad pressed during this touch
 	pressedFlagUp int32 // button-up flag for the clickpad press in progress
 	fracX, fracY  float64
-	scrollMM      float64
+	scrollMM      float64 // along scrollAxis
+	scrollX       bool    // the scroll is horizontal
+	scrollLocked  bool    // scrollAxis is chosen for this touch
+	scrollDX      float64 // travel before the axis is chosen
+	scrollDY      float64
 }
 
 // touchpadFor returns a translator when f is a touchpad: an absolute pointer
@@ -110,6 +114,7 @@ func axisResolution(f *os.File, axis uint) float64 {
 type touchpadOutput interface {
 	touchpadMove(dx, dy int32)
 	touchpadScroll(ticks int32)
+	touchpadHScroll(ticks int32)
 	touchpadButton(flags int32)
 }
 
@@ -195,12 +200,13 @@ func (t *touchpad) frame(now int64, out touchpadOutput) {
 	fingers := t.currentFingers()
 	if t.touching && !t.wasTouching {
 		t.downT, t.maxFingers, t.travelMM, t.pressed = now, 0, 0, false
-		t.havePos, t.fracX, t.fracY, t.scrollMM = false, 0, 0, 0
+		t.havePos, t.fracX, t.fracY = false, 0, 0
+		t.resetScroll()
 	}
 	if t.touching {
 		if fingers != t.fingers {
 			t.havePos = false // the reported position jumps to another finger
-			t.scrollMM = 0
+			t.resetScroll()
 		}
 		t.maxFingers = max(t.maxFingers, fingers)
 		if t.havePos {
@@ -211,7 +217,7 @@ func (t *touchpad) frame(now int64, out touchpadOutput) {
 			case 1:
 				t.move(dxMM, dyMM, now-t.lastT, out)
 			case 2:
-				t.scroll(dyMM, out)
+				t.scroll(dxMM, dyMM, out)
 			}
 		}
 		t.lastX, t.lastY, t.lastT, t.havePos = t.x, t.y, now, true
@@ -252,13 +258,42 @@ func (t *touchpad) move(dxMM, dyMM float64, dtMicros int64, out touchpadOutput) 
 	}
 }
 
+// scrollLockMM is how far two fingers travel before the scroll picks the
+// axis it keeps for the rest of the touch, so a slightly diagonal swipe
+// scrolls only one way.
+const scrollLockMM = 1.5
+
+func (t *touchpad) resetScroll() {
+	t.scrollMM, t.scrollX, t.scrollLocked, t.scrollDX, t.scrollDY = 0, false, false, 0, 0
+}
+
 // scroll follows the fingers (natural scrolling, the GNOME default): fingers
-// moving down bring the content down, which is a wheel-up.
-func (t *touchpad) scroll(dyMM float64, out touchpadOutput) {
-	t.scrollMM += dyMM
+// moving down bring the content down, which is a wheel-up, and fingers
+// moving right bring it right, which is a scroll to the left.
+func (t *touchpad) scroll(dxMM, dyMM float64, out touchpadOutput) {
+	if !t.scrollLocked {
+		t.scrollDX += dxMM
+		t.scrollDY += dyMM
+		if math.Hypot(t.scrollDX, t.scrollDY) < scrollLockMM {
+			return
+		}
+		t.scrollX = math.Abs(t.scrollDX) > math.Abs(t.scrollDY)
+		t.scrollLocked = true
+		dxMM, dyMM = t.scrollDX, t.scrollDY // count the travel so far
+	}
+	if t.scrollX {
+		t.scrollMM -= dxMM
+	} else {
+		t.scrollMM += dyMM
+	}
 	ticks := int32(t.scrollMM / scrollMMPerTick)
-	if ticks != 0 {
-		t.scrollMM -= float64(ticks) * scrollMMPerTick
+	if ticks == 0 {
+		return
+	}
+	t.scrollMM -= float64(ticks) * scrollMMPerTick
+	if t.scrollX {
+		out.touchpadHScroll(ticks)
+	} else {
 		out.touchpadScroll(ticks)
 	}
 }
@@ -295,6 +330,12 @@ func (s touchpadSink) touchpadMove(dx, dy int32) {
 func (s touchpadSink) touchpadScroll(ticks int32) {
 	if s.remote() {
 		s.c.sendMouse(0, 0, ticks*120, protocol.WM_MOUSEWHEEL)
+	}
+}
+
+func (s touchpadSink) touchpadHScroll(ticks int32) {
+	if s.remote() {
+		s.c.sendMouse(0, 0, ticks*120, protocol.WM_MOUSEHWHEEL)
 	}
 }
 
