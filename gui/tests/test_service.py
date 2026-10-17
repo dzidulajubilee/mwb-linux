@@ -199,13 +199,13 @@ class InterfaceTests(unittest.TestCase):
              "addr_info": [{"family": "inet", "local": "127.0.0.1"}]},
             {"ifname": "enp0s31f6", "flags": ["NO-CARRIER"], "operstate": "DOWN", "addr_info": []},
             {"ifname": "wlp4s0", "operstate": "UP", "addr_info": [
-                {"family": "inet6", "local": "fe80::1"}, {"family": "inet", "local": "10.20.25.186"}]},
+                {"family": "inet6", "local": "fe80::1"}, {"family": "inet", "local": "192.168.1.20"}]},
             {"ifname": "docker0", "operstate": "DOWN", "addr_info": [{"family": "inet", "local": "172.17.0.1"}]},
             {"ifname": "tailscale0", "operstate": "UNKNOWN", "addr_info": [{"family": "inet", "local": "100.64.1.2"}]},
         ])
         got = {i.name: i for i in service.parse_ip_json(text, sysfs)}
         self.assertNotIn("lo", got)
-        self.assertEqual((got["wlp4s0"].kind, got["wlp4s0"].address, got["wlp4s0"].up), ("Wi-Fi", "10.20.25.186", True))
+        self.assertEqual((got["wlp4s0"].kind, got["wlp4s0"].address, got["wlp4s0"].up), ("Wi-Fi", "192.168.1.20", True))
         self.assertEqual((got["enp0s31f6"].kind, got["enp0s31f6"].up), ("Ethernet", False))
         self.assertIn("not connected", got["enp0s31f6"].label())
         self.assertTrue(got["docker0"].hidden)

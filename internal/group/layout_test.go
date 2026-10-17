@@ -43,9 +43,9 @@ func TestCompleteAddsMissingMachinesTheSameWayEverywhere(t *testing.T) {
 func TestCompleteKeepsTheTwoMachineSide(t *testing.T) {
 	// A pair set up before layouts: "edge = left" on laptop means the peer is
 	// on its left, and the peer had "edge = right". Both reach one order.
-	onLaptop, _ := Complete(nil, []string{"mystogan"}, "laptop", "left")
-	onPeer, _ := Complete(nil, []string{"laptop"}, "mystogan", "right")
-	want := []string{"mystogan", "laptop"}
+	onLaptop, _ := Complete(nil, []string{"desk"}, "laptop", "left")
+	onPeer, _ := Complete(nil, []string{"laptop"}, "desk", "right")
+	want := []string{"desk", "laptop"}
 	if !slices.Equal(onLaptop, want) || !slices.Equal(onPeer, want) {
 		t.Fatalf("got %v and %v, want %v", onLaptop, onPeer, want)
 	}
