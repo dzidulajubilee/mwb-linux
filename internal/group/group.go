@@ -81,6 +81,7 @@ type link struct {
 	// Guarded by Group.mu.
 	addr          string
 	conn          *network.Conn
+	since         time.Time // when conn connected
 	info          bool
 	width, height int32
 	sharing       bool
@@ -260,7 +261,11 @@ func (g *Group) pick(l *link, out <-chan *network.Conn) (*network.Conn, bool) {
 		if name := strings.TrimRight(c.RemoteName, " "); name != l.name {
 			// The address now belongs to another machine, or to this one.
 			slog.Debug("group: address reached a different machine", "want", l.name, "got", name)
-			_ = c.Close()
+			if name == g.o.Name {
+				_ = c.Close()
+			} else {
+				g.route(c, outbound)
+			}
 			return nil, false, false
 		}
 		if first == nil {
@@ -315,8 +320,21 @@ func (g *Group) pick(l *link, out <-chan *network.Conn) (*network.Conn, bool) {
 // session runs one connection to a member until it ends.
 func (g *Group) session(l *link, conn *network.Conn, outbound bool) {
 	conn.SetIdleTimeout(network.LinuxPeerIdleTimeout)
+	// Close the duplicates that arrived while picking. Left open, one may be
+	// the socket the other machine kept, and each side would wait on a
+	// different socket until the idle timeout.
+	for drained := false; !drained; {
+		select {
+		case c := <-l.incoming:
+			_ = c.Close()
+		case c := <-l.dialed:
+			_ = c.Close()
+		default:
+			drained = true
+		}
+	}
 	g.mu.Lock()
-	l.conn, l.info = conn, false
+	l.conn, l.info, l.since = conn, false, time.Now()
 	learned := false
 	if l.addr == "" && !outbound {
 		// It reached us; that address reaches it too.
@@ -345,6 +363,10 @@ func (g *Group) session(l *link, conn *network.Conn, outbound bool) {
 	}
 	g.sendInfo(conn)
 	g.changed()
+	// A member counts as current until infoGrace has passed without its
+	// group document; show the verdict then.
+	recheck := time.AfterFunc(infoGrace, g.changed)
+	defer recheck.Stop()
 
 	if err := network.ReceiveLoop(conn, h); err != nil {
 		slog.Info("group: connection ended", "machine", l.name, "err", err)
@@ -374,6 +396,17 @@ func (g *Group) bootstrap() {
 	for !g.stopped() {
 		g.mu.Lock()
 		found := g.bootName != "" && g.links[g.bootName] != nil
+		if !found {
+			// A remembered member at this address is dialed by its own
+			// link; a second dial would only race it. If the address has
+			// changed hands, that link passes the connection on.
+			for _, l := range g.links {
+				if l.addr != "" && g.hostPort(l.addr) == g.hostPort(g.o.Bootstrap) {
+					g.bootName, found = l.name, true
+					break
+				}
+			}
+		}
 		g.mu.Unlock()
 		if found {
 			g.sleep(bootstrapIdle)
@@ -700,6 +733,11 @@ func (g *Group) changed() {
 	}
 }
 
+// infoGrace is how long a newly connected member has to send its group
+// document before it is reported as an older mwb. The document follows the
+// handshake at once; the grace covers a slow or busy link.
+const infoGrace = 10 * time.Second
+
 // Member is one other machine as the status file shows it.
 type Member struct {
 	Name    string `json:"name"`
@@ -743,7 +781,8 @@ func (g *Group) Snapshot() Snapshot {
 		l := g.links[n]
 		s.Members = append(s.Members, Member{
 			Name: n, Online: l.conn != nil, Address: l.addr,
-			Width: l.width, Height: l.height, Sharing: l.sharing, Current: l.info,
+			Width: l.width, Height: l.height, Sharing: l.sharing,
+			Current: l.info || (l.conn != nil && time.Since(l.since) < infoGrace),
 		})
 	}
 	return s

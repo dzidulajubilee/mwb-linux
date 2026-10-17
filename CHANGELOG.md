@@ -47,6 +47,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it as well.
 
 ### Fixed
+- Two Linux machines no longer echo heartbeats back and forth. Each echo
+  was answered again, so the traffic grew for as long as they stayed
+  connected: mwb used 20–60% of a CPU core when idle, and a dropped
+  connection logged thousands of "send heartbeat response" errors. A
+  failed reply now ends the connection at once.
+- A link no longer goes silent for 20 seconds after either machine starts.
+  The configured address and the remembered one were both dialed, and the
+  two machines could keep different sockets.
+- mwb-gui no longer says the other computer "runs an older mwb" for the
+  moment after it connects, before its group details arrive.
 - On KDE Plasma under Wayland, nothing copied in a Wayland app reached the
   other computers: KDE copies the clipboard to X11 apps, which mwb read,
   only while an X11 window has focus. mwb now asks the compositor whether

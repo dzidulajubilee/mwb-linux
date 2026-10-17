@@ -73,6 +73,13 @@ func ReceiveLoop(conn *Conn, handler *Handler) error {
 			}
 		case protocol.Heartbeat, protocol.HeartbeatEx, protocol.HeartbeatExL2, protocol.HeartbeatExL3:
 			slog.Debug("heartbeat received", "type", pkt.Type, "from", pkt.MachineName())
+			// Answer a machine's own heartbeat, which goes to everyone, but
+			// never an answer, which goes to one machine: two mwb peers
+			// would bounce it back and forth for as long as they stay
+			// connected, and each new heartbeat would add another.
+			if pkt.Des != protocol.IDAll {
+				break
+			}
 			resp := &protocol.Packet{
 				Type: pkt.Type,
 				Src:  conn.MachineID,
@@ -80,7 +87,7 @@ func ReceiveLoop(conn *Conn, handler *Handler) error {
 			}
 			resp.SetMachineName(conn.LocalName)
 			if err := conn.SendPacket(resp); err != nil {
-				slog.Error("send heartbeat response", "err", err)
+				return fmt.Errorf("send heartbeat response: %w", err)
 			}
 		case protocol.ByeBye:
 			slog.Info("remote disconnected (ByeBye)")
