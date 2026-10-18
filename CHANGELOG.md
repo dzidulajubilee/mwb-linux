@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Forget** a computer in a group: click a screen in the arrangement to
+  select it, and a Forget button removes that computer from the group on every
+  machine, not just this one. It leaves the picture at once. Until now a
+  machine could only ever be learned, never dropped, so an offline one lingered
+  in the row forever and a plain local delete was undone the moment another
+  machine gossiped it back. Forgetting records a tombstone that the whole group
+  adopts, so the machine stays gone — and if you later turn it back on, it
+  rejoins on its own by connecting in person.
 - When this machine adopts another's screen order and its shared edge moves to
   the opposite side, mwb-gui now says which machine set the order and how to
   change it, and the log records the adoption. Previously the pointer would

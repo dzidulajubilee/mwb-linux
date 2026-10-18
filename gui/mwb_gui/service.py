@@ -319,6 +319,94 @@ def status_path() -> str:
     return os.path.join(run, "mwb", "status.json")
 
 
+# --- forgetting a machine (internal/group store) -----------------------------
+
+# Longest machine name the wire carries (internal/group maxNameLen). A request
+# for anything longer could never match a real member, so it is refused.
+_MAX_NAME_BYTES = 15
+
+
+def state_dir() -> str:
+    """Where the client keeps learned members and tombstones, mirroring Go's
+    group.StorePath: $XDG_STATE_HOME/mwb or ~/.local/state/mwb."""
+    base = os.environ.get("XDG_STATE_HOME", "")
+    if not base or not os.path.isabs(base):
+        base = os.path.join(os.path.expanduser("~"), ".local", "state")
+    return os.path.join(base, "mwb")
+
+
+def forgotten_names(directory: str | None = None) -> set:
+    """Machines the client has been told to forget: the tombstones it has
+    recorded (forgotten.json) plus any request not yet consumed
+    (forget-request.json). The front end hides these from the arrangement and
+    never saves them back, so a forgotten machine cannot reappear from a stale
+    config or a save. Missing or corrupt files mean an empty set."""
+    directory = state_dir() if directory is None else directory
+    names: set = set()
+    try:
+        with open(os.path.join(directory, "forgotten.json"), encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            names |= {str(n) for n in data}
+    except (OSError, ValueError):
+        pass
+    try:
+        with open(os.path.join(directory, "forget-request.json"), encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            names |= {str(n) for n in data if isinstance(n, str)}
+    except (OSError, ValueError):
+        pass
+    return names
+
+
+def forgettable(name: str, me: str, offline: set, running: bool, linux_group: bool) -> bool:
+    """Whether a selected screen in the arrangement can be removed from the
+    group. Only a real, named Linux computer other than this one; and while the
+    service runs (so online state is known) only one that is offline, since an
+    online computer would simply rejoin at once. With the service stopped the
+    state is unknown, so any other named machine may be forgotten."""
+    if not name or not linux_group or name == me:
+        return False
+    if running:
+        return name in offline
+    return True
+
+
+def request_forget(name: str, directory: str | None = None) -> str:
+    """Ask the client to forget a machine on its next start.
+
+    The GUI has no live channel to the running client, so this leaves a request
+    file the client consumes when it restarts, the same way a saved layout
+    takes effect on restart. Returns "" on success or an error message; raises
+    ValueError for a name that could never be a real machine.
+    """
+    name = (name or "").strip()
+    if not name or len(name.encode("utf-8")) > _MAX_NAME_BYTES:
+        raise ValueError(name)
+    directory = state_dir() if directory is None else directory
+    path = os.path.join(directory, "forget-request.json")
+    names: list[str] = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            existing = json.load(f)
+        if isinstance(existing, list):
+            names = [str(n) for n in existing if isinstance(n, str)]
+    except (OSError, ValueError):
+        names = []
+    if name not in names:
+        names.append(name)
+    try:
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(names, f)
+        os.replace(tmp, path)
+    except OSError as exc:
+        return str(exc)
+    return ""
+
+
 def _pid_alive(pid: object) -> bool:
     if not isinstance(pid, int) or pid <= 0:
         return False

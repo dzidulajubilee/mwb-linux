@@ -95,29 +95,94 @@ type link struct {
 type Group struct {
 	o Options
 
-	mu       sync.Mutex
-	links    map[string]*link
-	layout   Layout
-	epoch    uint32
-	loc      string // where the cursor is; "" = unknown
-	locBy    string // who announced it
-	msg      byte
-	bootName string // the member the bootstrap address reached
-	running  bool
-	stop     <-chan struct{}
+	mu        sync.Mutex
+	links     map[string]*link
+	layout    Layout
+	forgotten map[string]int64 // name -> Unix second it was forgotten
+	epoch     uint32
+	loc       string // where the cursor is; "" = unknown
+	locBy     string // who announced it
+	msg       byte
+	bootName  string // the member the bootstrap address reached
+	running   bool
+	stop      <-chan struct{}
 }
 
 // New prepares a group; Run starts it.
 func New(o Options) *Group {
 	g := &Group{o: o, links: map[string]*link{}, layout: o.Layout}
-	for name, addr := range loadMembers(o.StorePath) {
+	g.forgotten = loadForgotten(forgottenPath(o.StorePath))
+	// A machine the front end asked to forget joins the tombstones now, so it
+	// is dropped below and its link is never made.
+	now := time.Now().Unix()
+	saveNeeded := false
+	for _, name := range takeForgetRequest(requestPath(o.StorePath)) {
 		if name != o.Name {
-			if l := g.newLinkLocked(name); l != nil {
-				l.addr = addr
-			}
+			g.forgotten[name] = now
+			saveNeeded = true
 		}
 	}
+	staleMember := false
+	for name, addr := range loadMembers(o.StorePath) {
+		if name == o.Name {
+			continue
+		}
+		if g.isForgotten(name) {
+			staleMember = true // a tombstoned machine still in the member store
+			continue
+		}
+		if l := g.newLinkLocked(name); l != nil {
+			l.addr = addr
+		}
+	}
+	// A consumed request is new: persist the tombstone. Either way, rewrite the
+	// member store when it still lists a forgotten machine, so it is not left as
+	// a stale entry. The saved layout is trimmed in Start, where the change can
+	// be written to config and announced. (Start always runs before Run.)
+	if saveNeeded {
+		capForgotten(g.forgotten)
+		_ = saveForgotten(forgottenPath(o.StorePath), g.forgotten)
+	}
+	if saveNeeded || staleMember {
+		g.saveMembers()
+	}
 	return g
+}
+
+// isForgotten reports whether name carries a tombstone. g.mu held, or during
+// New before Run.
+func (g *Group) isForgotten(name string) bool {
+	_, ok := g.forgotten[name]
+	return ok
+}
+
+// withoutForgotten returns order with every tombstoned name removed.
+func (g *Group) withoutForgotten(order []string) []string {
+	if len(g.forgotten) == 0 {
+		return order
+	}
+	out := order[:0:0]
+	for _, n := range order {
+		if !g.isForgotten(n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// capForgotten keeps the tombstone set within maxForgotten by dropping the
+// oldest, so it cannot grow without bound over a long-lived install.
+func capForgotten(forgotten map[string]int64) {
+	for len(forgotten) > maxForgotten {
+		var oldest string
+		var at int64
+		for n, t := range forgotten {
+			if oldest == "" || t < at {
+				oldest, at = n, t
+			}
+		}
+		delete(forgotten, oldest)
+	}
 }
 
 // Run connects to the members, accepts their connections from incoming, and
@@ -341,7 +406,19 @@ func (g *Group) session(l *link, conn *network.Conn, outbound bool) {
 		l.addr = conn.RemoteHost()
 		learned = true
 	}
+	// A forgotten machine that connects here in person is back: presence is
+	// newer than any tombstone, so lift it. It rejoins the layout through the
+	// usual completion once its group document arrives.
+	resurrected := false
+	if _, ok := g.forgotten[l.name]; ok {
+		delete(g.forgotten, l.name)
+		resurrected = true
+	}
 	g.mu.Unlock()
+	if resurrected {
+		slog.Info("group: a forgotten machine reconnected and rejoined the group", "machine", l.name)
+		_ = saveForgotten(forgottenPath(g.o.StorePath), g.forgottenCopy())
+	}
 	if learned {
 		g.saveMembers()
 	}
@@ -452,7 +529,8 @@ func (g *Group) sendInfo(conn *network.Conn) {
 			members[name] = l.addr
 		}
 	}
-	doc, err := encodeInfo(g.layout, members, w, h, g.o.Sharing, g.epoch, g.o.Port, time.Now())
+	forgotten := maps.Clone(g.forgotten)
+	doc, err := encodeInfo(g.layout, members, forgotten, w, h, g.o.Sharing, g.epoch, g.o.Port, time.Now())
 	g.msg++
 	msg := g.msg
 	g.mu.Unlock()
@@ -500,6 +578,37 @@ func (g *Group) applyInfo(from *link, doc []byte) {
 	from.info, from.width, from.height, from.sharing = true, in.Width, in.Height, in.Sharing
 	g.epoch = max(g.epoch, in.Epoch)
 
+	// Capture the layout and this machine's neighbours before anything below
+	// changes them, so layoutUpdated still restarts capture when an adopted
+	// tombstone drops this machine's neighbour, not only when the order moves.
+	before := g.layout
+	leftBefore, rightBefore := Neighbors(before.Order, me)
+
+	// Adopt tombstones the sender holds and this machine does not, or holds
+	// more recently, and drop any member they name. A machine forgotten on one
+	// screen is forgotten on all, so a peer that has not heard yet cannot keep
+	// re-advertising it. The machine's own name is never a tombstone.
+	forgetChanged := false
+	for name, at := range in.Forgotten {
+		if name == me {
+			continue
+		}
+		if cur, ok := g.forgotten[name]; !ok || at > cur {
+			g.forgotten[name] = at
+			forgetChanged = true
+			if l := g.links[name]; l != nil {
+				if l.conn != nil {
+					_ = l.conn.Close()
+				}
+				delete(g.links, name)
+			}
+		}
+	}
+	if forgetChanged {
+		capForgotten(g.forgotten)
+		g.layout.Order = g.withoutForgotten(g.layout.Order)
+	}
+
 	var start []*link
 	learned := false
 	if in.Port > 0 && in.Port != g.o.Port && from.addr != "" {
@@ -510,7 +619,9 @@ func (g *Group) applyInfo(from *link, doc []byte) {
 		}
 	}
 	for name, addr := range in.Members {
-		if name == me {
+		if name == me || g.isForgotten(name) {
+			// Hearsay about a forgotten machine does not bring it back; only a
+			// direct connection from the machine itself does (see session).
 			continue
 		}
 		l := g.links[name]
@@ -532,10 +643,9 @@ func (g *Group) applyInfo(from *link, doc []byte) {
 		}
 	}
 
-	before := g.layout
-	leftBefore, rightBefore := Neighbors(before.Order, me)
 	if len(theirs.Order) > 0 && theirs.Newer(g.layout) {
 		g.layout = theirs
+		g.layout.Order = g.withoutForgotten(theirs.Order)
 	}
 	bumped := g.completeLocked()
 	after := g.layout
@@ -547,11 +657,21 @@ func (g *Group) applyInfo(from *link, doc []byte) {
 			go g.runLink(l)
 		}
 	}
+	if forgetChanged {
+		_ = saveForgotten(forgottenPath(g.o.StorePath), g.forgottenCopy())
+	}
 	if learned || len(start) > 0 {
 		g.saveMembers()
 	}
 	g.layoutUpdated(before, after, leftBefore, rightBefore, bumped)
 	g.changed()
+}
+
+// forgottenCopy returns a snapshot of the tombstones for writing to disk.
+func (g *Group) forgottenCopy() map[string]int64 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return maps.Clone(g.forgotten)
 }
 
 // completeLocked adds members missing from the layout. Adding another
@@ -615,10 +735,20 @@ func (g *Group) Start() {
 	g.mu.Lock()
 	before := g.layout
 	l, r := Neighbors(before.Order, g.o.Name)
+	// Drop any machine forgotten before Run (a request consumed in New, or a
+	// tombstone loaded from disk) from the saved order. Make it a change this
+	// machine originated, so the trimmed order is written to config and told to
+	// the others, instead of a forgotten screen lingering in the row.
+	stripped := g.withoutForgotten(before.Order)
+	removed := len(stripped) != len(before.Order)
+	if removed {
+		g.layout.Order = stripped
+		g.layout.Changed, g.layout.By = time.Now().Unix(), g.o.Name
+	}
 	bumped := g.completeLocked()
 	after := g.layout
 	g.mu.Unlock()
-	g.layoutUpdated(before, after, l, r, bumped)
+	g.layoutUpdated(before, after, l, r, bumped || removed)
 }
 
 // applyCursor follows a member's announcement of where the cursor is.
@@ -683,6 +813,62 @@ func (g *Group) Moved(to, side string, y int32) {
 	for _, conn := range g.onlineConns() {
 		if err := conn.SendPacket(protocol.NewCursorPacket(conn.MachineID, conn.RemoteID, c)); err != nil {
 			slog.Debug("group: announce cursor", "err", err)
+		}
+	}
+	g.changed()
+}
+
+// Forget removes a machine from this group and records a tombstone, so a peer
+// that still remembers it cannot gossip it back. The tombstone propagates to
+// the whole group, and a layout without the machine goes with it. The machine
+// rejoins only by connecting here itself (see session). Forgetting an unknown
+// or already-forgotten machine still stamps a fresh tombstone, which is how a
+// front-end request for an offline machine takes effect.
+func (g *Group) Forget(name string) {
+	if name == "" || name == g.o.Name {
+		return
+	}
+	g.mu.Lock()
+	now := time.Now().Unix()
+	if cur, ok := g.forgotten[name]; !ok || now > cur {
+		g.forgotten[name] = now
+	}
+	capForgotten(g.forgotten)
+	if l := g.links[name]; l != nil {
+		if l.conn != nil {
+			_ = l.conn.Close()
+		}
+		delete(g.links, name)
+	}
+	if g.loc == name {
+		g.loc = ""
+	}
+	before := g.layout
+	leftBefore, rightBefore := Neighbors(before.Order, g.o.Name)
+	g.layout.Order = g.withoutForgotten(g.layout.Order)
+	removed := !slices.Equal(before.Order, g.layout.Order)
+	if removed {
+		g.layout.Changed, g.layout.By = now, g.o.Name
+	}
+	after := g.layout
+	conns := make([]*network.Conn, 0, len(g.links))
+	for _, l := range g.links {
+		if l.conn != nil {
+			conns = append(conns, l.conn)
+		}
+	}
+	g.mu.Unlock()
+
+	slog.Info("group: forgetting a machine; it will not come back unless it connects here itself", "machine", name)
+	_ = saveForgotten(forgottenPath(g.o.StorePath), g.forgottenCopy())
+	g.saveMembers()
+	// layoutUpdated broadcasts when the order changed and this machine made the
+	// change; when the machine was not in the layout, send the tombstone anyway
+	// so the others still drop it.
+	g.layoutUpdated(before, after, leftBefore, rightBefore, removed)
+	if !removed {
+		for _, c := range conns {
+			g.sendInfo(c)
 		}
 	}
 	g.changed()

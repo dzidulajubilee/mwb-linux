@@ -93,7 +93,7 @@ class ArrangementView(Gtk.DrawingArea):
 
     DRAG_THRESHOLD = 6
 
-    def __init__(self, on_changed):
+    def __init__(self, on_changed, on_select=None):
         super().__init__()
         self.order: list[str] = [ME, OTHER]
         self.me = ME
@@ -104,6 +104,7 @@ class ArrangementView(Gtk.DrawingArea):
         self.location = ""
         self.connected = False
         self._on_changed = on_changed
+        self._on_select = on_select
         self._selected = ME
         self._drag = None  # (index, start_x, current_dx) while dragging
         self._rects: list[tuple[str, float, float]] = []  # (name, x, w) as last drawn
@@ -138,6 +139,27 @@ class ArrangementView(Gtk.DrawingArea):
         self.order, self.me = order, me
         if self._selected not in order:
             self._selected = me
+        self.refresh()
+
+    @property
+    def selected(self) -> str:
+        return self._selected
+
+    def _select(self, name: str):
+        self._selected = name
+        self.queue_draw()
+        if self._on_select is not None:
+            self._on_select(name)
+
+    def remove_screen(self, name: str):
+        """Drop a screen from the row at once, so a forgotten machine leaves the
+        picture without waiting for the service to restart and report back."""
+        if name not in self.order or name == self.me:
+            return
+        self.order = [n for n in self.order if n != name]
+        self.offline.discard(name)
+        if self._selected == name:
+            self._selected = self.me
         self.refresh()
 
     def title(self, name: str) -> str:
@@ -203,12 +225,11 @@ class ArrangementView(Gtk.DrawingArea):
         i, x0, _ = drag
         name = self.order[i]
         if abs(dx) < self.DRAG_THRESHOLD:
-            # A click: swap two screens, or select one of several.
+            # A click selects the screen (so it can be acted on, e.g. Forget).
+            # With two screens a click also swaps their order, as before.
             if len(self.order) == 2:
                 self._move(name, 1 - i)
-            else:
-                self._selected = name
-                self.queue_draw()
+            self._select(name)
             return
         if len(self.order) > 2:
             self._move(name, self._slot_for(x0 + dx))
@@ -427,13 +448,25 @@ class MainWindow(Gtk.ApplicationWindow):
         outer.append(page)
 
         page.append(self._build_status())
-        self.arrangement = ArrangementView(self._arrangement_changed)
+        self.arrangement = ArrangementView(self._arrangement_changed, self._on_screen_selected)
         arr_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         arr_box.append(self.arrangement)
         self.arrangement_hint = _dim("")
         self.arrangement_hint.set_justify(Gtk.Justification.CENTER)
         self.arrangement_hint.set_xalign(0.5)
         arr_box.append(self.arrangement_hint)
+        # Appears when a screen is clicked: remove that computer from the group.
+        self._forget_target = ""
+        self._forgetting: set[str] = set()  # removed here, not yet confirmed gone
+        self.forget_row = Gtk.Box(spacing=8, halign=Gtk.Align.CENTER)
+        self.forget_label = _dim("")
+        self.forget_row.append(self.forget_label)
+        self.forget_btn = Gtk.Button()
+        self.forget_btn.add_css_class("destructive-action")
+        self.forget_btn.connect("clicked", lambda *_: self._confirm_forget(self._forget_target))
+        self.forget_row.append(self.forget_btn)
+        self.forget_row.set_visible(False)
+        arr_box.append(self.forget_row)
         page.append(arr_box)
         page.append(self._build_connection())
         page.append(self._build_sharing())
@@ -685,13 +718,20 @@ class MainWindow(Gtk.ApplicationWindow):
             "name": self.name.get_text().strip(),
             "edge": self._edge,
             "interface": self._selected_interface(),
-            "layout": list(self._layout_order) if self._layout_dirty else list(self._loaded.get("layout") or []),
+            "layout": self._layout_to_save(),
             "bidirectional": self.bidi.get_active(),
             "clipboard": self.clip.get_active(),
             "file_transfer": self.files.get_active(),
             "remote_width": int(self.rw.get_value()),
             "remote_height": int(self.rh.get_value()),
         }
+
+    def _layout_to_save(self) -> list:
+        """The screen order to write, with forgotten machines removed so a save
+        can never put one back into the config the client reads on restart."""
+        order = list(self._layout_order) if self._layout_dirty else list(self._loaded.get("layout") or [])
+        hidden = self._hidden()
+        return [n for n in order if n not in hidden] if hidden else order
 
     def changed_values(self) -> dict[str, object]:
         """Only the settings the user changed, so a save never overwrites an
@@ -748,22 +788,38 @@ class MainWindow(Gtk.ApplicationWindow):
     def _me_name(self, v: dict) -> str:
         return str(v["name"] or socket.gethostname()[: cf.NAME_MAX])
 
+    def _hidden(self) -> set:
+        """Machines that must never appear in the arrangement or be saved: the
+        tombstones the client holds, plus any just forgotten here and not yet
+        written. Reading the store makes this survive a stale config, a save or
+        a Start/Stop — the forgotten machine stays gone."""
+        return self._forgetting | service.forgotten_names()
+
     def _display_layout(self, me: str) -> list[str]:
         """The screen order to show for a Linux computer: the user's edit, the
-        running group's, the saved one, or the two-machine side."""
+        running group's, the saved one, or the two-machine side. Forgotten
+        machines are held out, so one cannot flicker back from a stale source."""
         if self._layout_dirty and self._layout_order:
-            return self._layout_order
-        live = [str(n) for n in ((self._group or {}).get("layout") or [])]
-        if len(live) >= 2 and me in live:
-            return live
-        saved = [str(n) for n in (self._loaded.get("layout") or [])]
-        if len(saved) >= 2 and me in saved:
-            return saved
-        other = OTHER
-        members = (self._group or {}).get("members") or []
-        if len(members) == 1 and members[0].get("name"):
-            other = str(members[0]["name"])
-        return [other, me] if self._edge == "left" else [me, other]
+            order = self._layout_order
+        else:
+            live = [str(n) for n in ((self._group or {}).get("layout") or [])]
+            saved = [str(n) for n in (self._loaded.get("layout") or [])]
+            if len(live) >= 2 and me in live:
+                order = live
+            elif len(saved) >= 2 and me in saved:
+                order = saved
+            else:
+                other = OTHER
+                members = (self._group or {}).get("members") or []
+                if len(members) == 1 and members[0].get("name"):
+                    other = str(members[0]["name"])
+                order = [other, me] if self._edge == "left" else [me, other]
+        hidden = self._hidden()
+        if hidden:
+            order = [n for n in order if n not in hidden]
+            if me not in order:
+                order.append(me)
+        return order
 
     def _sync_arrangement(self, v: dict):
         a = self.arrangement
@@ -784,12 +840,17 @@ class MainWindow(Gtk.ApplicationWindow):
             a.offline, a.location = set(), ""
             a.set_order([OTHER, ME] if self._edge == "left" else [ME, OTHER], ME)
         else:
+            hidden = self._hidden()
+            # Once a tombstone is recorded, the transient copy is redundant.
+            self._forgetting -= service.forgotten_names()
             a.titles = {me: me, OTHER: other_title}
             a.kinds = {}
             a.aspects = {me: local_aspect, OTHER: other_aspect}
             a.offline = set()
             for m in (self._group or {}).get("members") or []:
                 name = str(m.get("name") or "")
+                if name in hidden:
+                    continue
                 if m.get("width") and m.get("height"):
                     a.aspects[name] = int(m["width"]) / int(m["height"])
                 if not m.get("online"):
@@ -797,7 +858,32 @@ class MainWindow(Gtk.ApplicationWindow):
             a.location = str((self._group or {}).get("location") or "")
             a.set_order(self._display_layout(me), me)
         a.refresh()
+        self._refresh_forget_row()
         self._update_arrangement_hint()
+
+    def _is_linux_group(self) -> bool:
+        return self.arrangement.me not in (ME, OTHER)
+
+    def _forgettable(self, name: str) -> bool:
+        if name in (ME, OTHER) or name in self._hidden():
+            return False
+        return service.forgettable(name, self.arrangement.me, self.arrangement.offline,
+                                   self._unit.running, self._is_linux_group())
+
+    def _on_screen_selected(self, name: str):
+        self._refresh_forget_row(name)
+
+    def _refresh_forget_row(self, name: str | None = None):
+        name = self.arrangement.selected if name is None else name
+        if self._forgettable(name):
+            self._forget_target = name
+            self.forget_label.set_markup(f"<b>{GLib.markup_escape_text(name)}</b> is selected")
+            self.forget_btn.set_label(f"Forget {name}")
+            self.forget_btn.set_tooltip_text(f"Remove {name} from the group on every computer")
+            self.forget_row.set_visible(True)
+        else:
+            self._forget_target = ""
+            self.forget_row.set_visible(False)
 
     def _update_arrangement_hint(self):
         a = self.arrangement
@@ -954,19 +1040,43 @@ class MainWindow(Gtk.ApplicationWindow):
         else:
             self.save_msg.set_text("Saved.")
 
-    def _confirm_clear(self, *_):
-        title = "Clear the saved settings?"
-        body = ("This computer forgets its security key, the other computers’ addresses and the screen order, "
-                "and stops sharing until you set it up again. The old settings are kept as "
-                f"{os.path.basename(self.config_path)}.bak.")
+    def _confirm_forget(self, name: str):
+        if not name:
+            return
+        title = f"Forget {name}?"
+        body = (f"{name} is removed from this group on every computer. If you later turn it back on, "
+                "it rejoins on its own.")
+        self._confirm(title, body, "Forget", lambda: self._forget(name))
+
+    def _forget(self, name: str):
+        try:
+            err = service.request_forget(name)
+        except ValueError:
+            self.save_msg.set_text(f"Couldn’t forget {name}: not a valid computer name.")
+            return
+        if err:
+            self.save_msg.set_text(f"Couldn’t forget {name}: {err}")
+            return
+        # Drop it from the picture now; keep holding it out until the service
+        # confirms it is gone, so it does not flicker back during the restart.
+        self._forgetting.add(name)
+        self.arrangement.remove_screen(name)
+        self._refresh_forget_row()
+        if self._unit.running:
+            self._service("restart", done_msg=f"{name} removed from the group.")
+        else:
+            self.save_msg.set_text(f"{name} will be removed when mwb next starts.")
+
+    def _confirm(self, title: str, body: str, action_label: str, on_confirm):
+        """Ask a yes/no with a destructive action, on GTK 4.10+ or older."""
         if hasattr(Gtk, "AlertDialog"):  # GTK 4.10+
-            dialog = Gtk.AlertDialog(message=title, detail=body, buttons=["Cancel", "Clear settings"],
+            dialog = Gtk.AlertDialog(message=title, detail=body, buttons=["Cancel", action_label],
                                      cancel_button=0, default_button=0)
 
             def done(d, result):
                 try:
                     if d.choose_finish(result) == 1:
-                        self._clear_settings()
+                        on_confirm()
                 except GLib.Error:
                     pass  # dismissed
 
@@ -975,17 +1085,24 @@ class MainWindow(Gtk.ApplicationWindow):
         dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.WARNING,
                                    buttons=Gtk.ButtonsType.NONE, text=title, secondary_text=body)
         dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        clear = dialog.add_button("Clear settings", Gtk.ResponseType.ACCEPT)
-        clear.add_css_class("destructive-action")
+        go = dialog.add_button(action_label, Gtk.ResponseType.ACCEPT)
+        go.add_css_class("destructive-action")
         dialog.set_default_response(Gtk.ResponseType.CANCEL)
 
         def respond(d, response):
             d.destroy()
             if response == Gtk.ResponseType.ACCEPT:
-                self._clear_settings()
+                on_confirm()
 
         dialog.connect("response", respond)
         dialog.present()
+
+    def _confirm_clear(self, *_):
+        title = "Clear the saved settings?"
+        body = ("This computer forgets its security key, the other computers’ addresses and the screen order, "
+                "and stops sharing until you set it up again. The old settings are kept as "
+                f"{os.path.basename(self.config_path)}.bak.")
+        self._confirm(title, body, "Clear settings", self._clear_settings)
 
     def _clear_settings(self):
         try:

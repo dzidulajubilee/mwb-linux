@@ -2,6 +2,7 @@ package group
 
 import (
 	"net"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"sync"
@@ -109,6 +110,158 @@ func TestSnapshotReportsWhichMachineSetTheLayout(t *testing.T) {
 	})
 	if got := g.Snapshot().LayoutBy; got != "peer" {
 		t.Fatalf("Snapshot().LayoutBy = %q, want %q so the GUI can say the order was set elsewhere", got, "peer")
+	}
+}
+
+func TestForgetRemovesMachineAndTombstonesIt(t *testing.T) {
+	g := New(Options{Name: "me", Layout: Layout{Order: []string{"me", "gone", "keep"}, Changed: 5, By: "me"}})
+	g.newLinkLocked("gone")
+	g.newLinkLocked("keep")
+
+	g.Forget("gone")
+
+	if !g.isForgotten("gone") {
+		t.Fatal("forgotten machine has no tombstone")
+	}
+	if _, ok := g.links["gone"]; ok {
+		t.Fatal("forgotten machine still has a link")
+	}
+	snap := g.Snapshot()
+	if slices.Contains(snap.Layout, "gone") {
+		t.Fatalf("forgotten machine still in the layout: %v", snap.Layout)
+	}
+	if !slices.Contains(snap.Layout, "keep") {
+		t.Fatalf("forgetting one machine dropped another: %v", snap.Layout)
+	}
+	// Forgetting this machine itself is refused: a group cannot forget its own
+	// screen.
+	g.Forget("me")
+	if g.isForgotten("me") {
+		t.Fatal("a machine forgot itself")
+	}
+}
+
+func TestNewDropsAForgottenMachineFromTheMemberStore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mwb", "members.json")
+	if err := saveMembers(path, map[string]string{"gone": "10.0.0.9", "keep": "10.0.0.2"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveForgotten(forgottenPath(path), map[string]int64{"gone": 100}); err != nil {
+		t.Fatal(err)
+	}
+
+	New(Options{Name: "me", StorePath: path})
+
+	got := loadMembers(path)
+	if _, ok := got["gone"]; ok {
+		t.Fatalf("forgotten machine left in the member store: %v", got)
+	}
+	if got["keep"] != "10.0.0.2" {
+		t.Fatalf("New dropped a machine it should have kept: %v", got)
+	}
+}
+
+func TestStartRewritesTheLayoutWithoutAForgottenMachine(t *testing.T) {
+	var saved []string
+	g := New(Options{
+		Name:   "me",
+		Layout: Layout{Order: []string{"gone", "me", "keep"}, Changed: 5, By: "old"},
+		SaveLayout: func(l Layout) error {
+			saved = l.Order
+			return nil
+		},
+	})
+	// A tombstone this process already holds (as if loaded from forgotten.json
+	// or consumed from a request in New).
+	g.forgotten["gone"] = 100
+
+	g.Start()
+
+	if slices.Contains(saved, "gone") || saved == nil {
+		t.Fatalf("Start did not rewrite config without the forgotten machine: saved=%v", saved)
+	}
+	if slices.Contains(g.Snapshot().Layout, "gone") {
+		t.Fatalf("forgotten machine still in the layout after Start: %v", g.Snapshot().Layout)
+	}
+}
+
+func TestGossipCannotResurrectAForgottenMachine(t *testing.T) {
+	g := New(Options{Name: "me", Layout: Layout{Order: []string{"me", "peer"}}})
+	from := g.newLinkLocked("peer")
+	g.Forget("gone") // gone was never a member; the tombstone still stands
+
+	// A peer that still remembers "gone" advertises it, with a newer layout
+	// that even lists it. Neither brings it back.
+	doc, err := encodeInfo(
+		Layout{Order: []string{"me", "peer", "gone"}, Changed: 999, By: "peer"},
+		map[string]string{"gone": "10.0.0.9"}, nil,
+		1600, 900, true, 0, 0, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.applyInfo(from, doc)
+
+	if _, ok := g.links["gone"]; ok {
+		t.Fatal("hearsay re-created the forgotten machine's link")
+	}
+	if slices.Contains(g.Snapshot().Layout, "gone") {
+		t.Fatalf("hearsay put the forgotten machine back in the layout: %v", g.Snapshot().Layout)
+	}
+}
+
+func TestAdoptingATombstoneDropsAKnownMember(t *testing.T) {
+	g := New(Options{Name: "me", Layout: Layout{Order: []string{"me", "peer", "gone"}}})
+	from := g.newLinkLocked("peer")
+	g.newLinkLocked("gone")
+
+	// peer has forgotten "gone" and says so. This machine adopts it.
+	doc, err := encodeInfo(
+		Layout{Order: []string{"me", "peer"}, Changed: 10, By: "peer"},
+		map[string]string{"gone": "10.0.0.9"},
+		map[string]int64{"gone": time.Now().Unix()},
+		1600, 900, true, 0, 0, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.applyInfo(from, doc)
+
+	if !g.isForgotten("gone") {
+		t.Fatal("did not adopt the peer's tombstone")
+	}
+	if _, ok := g.links["gone"]; ok {
+		t.Fatal("adopting a tombstone left the member's link")
+	}
+	if slices.Contains(g.Snapshot().Layout, "gone") {
+		t.Fatalf("adopting a tombstone left the member in the layout: %v", g.Snapshot().Layout)
+	}
+}
+
+func TestAdoptedTombstoneForANeighborRestartsCapture(t *testing.T) {
+	restarted := false
+	g := New(Options{
+		Name:             "me",
+		Layout:           Layout{Order: []string{"gone", "me", "peer"}},
+		NeighborsChanged: func() { restarted = true },
+	})
+	from := g.newLinkLocked("peer")
+	g.newLinkLocked("gone")
+
+	// peer forgets "gone", this machine's left neighbour. The shared edge on
+	// the left disappears, so the capturer must be told to stop watching it.
+	doc, err := encodeInfo(
+		Layout{Order: []string{"me", "peer"}, Changed: 10, By: "peer"},
+		nil, map[string]int64{"gone": time.Now().Unix()},
+		1600, 900, true, 0, 0, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.applyInfo(from, doc)
+
+	if !restarted {
+		t.Fatal("dropping a neighbour via a tombstone did not restart capture")
+	}
+	if l, _ := g.Neighbors(); l {
+		t.Fatal("still reports a left neighbour after the only one was forgotten")
 	}
 }
 

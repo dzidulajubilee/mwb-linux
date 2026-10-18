@@ -74,6 +74,52 @@ class StatusFileTests(unittest.TestCase):
         self.assertIsNone(service.read_status(path))
         self.assertIsNone(service.read_status(""))
 
+    def test_request_forget_writes_and_merges(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
+        self.assertEqual(service.request_forget("mystogan", d), "")
+        path = os.path.join(d, "forget-request.json")
+        with open(path) as f:
+            self.assertEqual(json.load(f), ["mystogan"])
+        # A second name is appended; a repeat is not duplicated.
+        service.request_forget("tv", d)
+        service.request_forget("mystogan", d)
+        with open(path) as f:
+            self.assertEqual(sorted(json.load(f)), ["mystogan", "tv"])
+
+    def test_forgotten_names_reads_both_files(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
+        self.assertEqual(service.forgotten_names(d), set())
+        with open(os.path.join(d, "forgotten.json"), "w") as f:
+            json.dump({"mystogan": 123, "tv": 456}, f)
+        with open(os.path.join(d, "forget-request.json"), "w") as f:
+            json.dump(["pending", "mystogan"], f)
+        self.assertEqual(service.forgotten_names(d), {"mystogan", "tv", "pending"})
+        # Corrupt files are ignored, not fatal.
+        with open(os.path.join(d, "forgotten.json"), "w") as f:
+            f.write("{not json")
+        self.assertEqual(service.forgotten_names(d), {"pending", "mystogan"})
+
+    def test_forgettable_gating(self):
+        f = service.forgettable
+        # Running: only an offline, named peer that is not this computer.
+        self.assertTrue(f("tv", "desk", {"tv"}, running=True, linux_group=True))
+        self.assertFalse(f("tv", "desk", set(), running=True, linux_group=True))  # online
+        self.assertFalse(f("desk", "desk", {"desk"}, running=True, linux_group=True))  # self
+        self.assertFalse(f("tv", "desk", {"tv"}, running=True, linux_group=False))  # windows pairing
+        self.assertFalse(f("", "desk", set(), running=True, linux_group=True))
+        # Stopped: state unknown, so any other named machine may be forgotten.
+        self.assertTrue(f("tv", "desk", set(), running=False, linux_group=True))
+        self.assertFalse(f("desk", "desk", set(), running=False, linux_group=True))
+
+    def test_request_forget_rejects_impossible_names(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
+        for bad in ("", "   ", "this-name-is-far-too-long"):
+            with self.assertRaises(ValueError):
+                service.request_forget(bad, d)
+
     def test_status_path_needs_runtime_dir(self):
         old = os.environ.get("XDG_RUNTIME_DIR")
         try:
