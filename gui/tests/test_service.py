@@ -51,6 +51,20 @@ class StatusFileTests(unittest.TestCase):
         path = self.write({"state": "connected", "pid": pid})
         self.assertIsNone(service.read_status(path))
 
+    def test_recent_key_mismatch(self):
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
+        fresh = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        stale = (now - timedelta(seconds=120)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.assertEqual(
+            service.recent_key_mismatch({"key_mismatch_from": "10.0.0.5:4", "key_mismatch_at": fresh}),
+            "10.0.0.5:4")
+        self.assertIsNone(
+            service.recent_key_mismatch({"key_mismatch_from": "10.0.0.5:4", "key_mismatch_at": stale}))
+        self.assertIsNone(service.recent_key_mismatch({"key_mismatch_at": fresh}))
+        self.assertIsNone(service.recent_key_mismatch({"key_mismatch_from": "x", "key_mismatch_at": "bad"}))
+        self.assertIsNone(service.recent_key_mismatch(None))
+
     def test_missing_or_corrupt(self):
         self.assertIsNone(service.read_status("/nonexistent/status.json"))
         fd, path = tempfile.mkstemp()
@@ -180,6 +194,21 @@ class GroupDescriptionTests(unittest.TestCase):
         self.assertEqual((kind, title), ("ok", "Connected to desk and mini"))
         self.assertIn("tv is offline", detail)
         self.assertIn("highlighted edge", detail)
+
+    def test_layout_set_on_another_machine_is_called_out(self):
+        st = {"state": "connected", "group": True, "sharing": True, "layout_by": "desk",
+              "members": [{"name": "desk", "online": True, "current": True}]}
+        _, _, detail = service.describe_group(st)
+        self.assertIn("screen order was set on desk", detail)
+        self.assertIn("drag the screens", detail)
+
+    def test_layout_set_here_is_not_called_out(self):
+        # This machine's own name is never in members, so a layout_by that is
+        # not a member means we set the order; no remote-order note.
+        st = {"state": "connected", "group": True, "sharing": True, "layout_by": "me",
+              "members": [{"name": "desk", "online": True, "current": True}]}
+        _, _, detail = service.describe_group(st)
+        self.assertNotIn("screen order was set on", detail)
 
     def test_older_member_is_an_error(self):
         st = {"group": True, "members": [{"name": "old", "online": True, "current": False}]}

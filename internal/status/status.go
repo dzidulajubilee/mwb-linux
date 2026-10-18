@@ -67,13 +67,24 @@ type Status struct {
 	Layout   []string       `json:"layout,omitempty"`
 	Members  []group.Member `json:"members,omitempty"`
 	Location string         `json:"location,omitempty"`
-	PID      int            `json:"pid"`
-	Version  string         `json:"version"`
-	Since    time.Time      `json:"since"`
+	// LayoutBy names the machine whose screen order is in effect. mwb-gui
+	// shows it when another machine set the order, so a shared edge that moved
+	// to the far side does not look like a broken crossing.
+	LayoutBy string    `json:"layout_by,omitempty"`
+	PID      int       `json:"pid"`
+	Version  string    `json:"version"`
+	Since    time.Time `json:"since"`
 	// Error explains StateConfigError and StateNoNetwork.
 	Error string `json:"error,omitempty"`
 	// Interface is the network interface mwb is restricted to, if any.
 	Interface string `json:"interface,omitempty"`
+	// KeyMismatchFrom and KeyMismatchAt record the last time a computer tried
+	// to connect with a different security key. mwb-gui shows this while the
+	// machine is not yet connected, so a key typed wrong looks like the real
+	// misconfiguration it is instead of a silent "not connected". Cleared once
+	// a connection is established.
+	KeyMismatchFrom string    `json:"key_mismatch_from,omitempty"`
+	KeyMismatchAt   time.Time `json:"key_mismatch_at,omitempty"`
 }
 
 // Path returns the status file location, or "" when XDG_RUNTIME_DIR is unset.
@@ -116,6 +127,7 @@ func (w *Writer) Connected(remote string, outbound bool) error {
 		s.State = StateConnected
 		s.Remote = remote
 		s.Outbound = outbound
+		s.KeyMismatchFrom, s.KeyMismatchAt = "", time.Time{}
 	})
 }
 
@@ -146,6 +158,7 @@ func (w *Writer) Group(snap group.Snapshot) error {
 	return w.write(func(s *Status) {
 		s.Group = true
 		s.Layout, s.Members, s.Location = snap.Layout, snap.Members, snap.Location
+		s.LayoutBy = snap.LayoutBy
 		var online []string
 		for _, m := range snap.Members {
 			if m.Online {
@@ -155,6 +168,7 @@ func (w *Writer) Group(snap group.Snapshot) error {
 		if len(online) > 0 {
 			s.State = StateConnected
 			s.Remote = strings.Join(online, ", ")
+			s.KeyMismatchFrom, s.KeyMismatchAt = "", time.Time{}
 		} else {
 			s.State = StateConnecting
 			s.Remote = ""
@@ -166,6 +180,16 @@ func (w *Writer) Group(snap group.Snapshot) error {
 // StateConfigError or StateNoNetwork, and reason explains it.
 func (w *Writer) Waiting(state, reason string) error {
 	return w.write(func(s *Status) { s.State, s.Error = state, reason })
+}
+
+// KeyMismatch records that a computer at remote tried to connect with a
+// different security key. The GUI shows it while this machine is not yet
+// connected.
+func (w *Writer) KeyMismatch(remote string) error {
+	return w.write(func(s *Status) {
+		s.KeyMismatchFrom = remote
+		s.KeyMismatchAt = time.Now().UTC().Truncate(time.Second)
+	})
 }
 
 // Remove deletes the status file on clean shutdown. A crash leaves it behind;

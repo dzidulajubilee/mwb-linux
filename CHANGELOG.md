@@ -7,6 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- When this machine adopts another's screen order and its shared edge moves to
+  the opposite side, mwb-gui now says which machine set the order and how to
+  change it, and the log records the adoption. Previously the pointer would
+  silently stop crossing the edge you expected, with no hint that the shared
+  edge had moved to the other side.
+- A wrong security key no longer looks like "not connected". When a computer
+  reaches this one with a different key, the connection it rejects is noticed,
+  mwb-gui says plainly that a computer is trying with a different security key
+  and names its address, and the log records it as such instead of as a silent
+  first-packet failure. (The message appears on the computer that is reached;
+  the dialing side learns nothing back, as the connection is refused before any
+  reply.)
 - More of the keyboard and mouse reach the other computer: the mouse's
   back and forward side buttons, the tilt wheel, two-finger sideways
   scrolling on a touchpad, play/pause, next and previous track, the

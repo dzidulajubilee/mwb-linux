@@ -62,7 +62,7 @@ func freePort(t *testing.T) int {
 func startMachine(t *testing.T, name string, port int, bootstrap string) *machine {
 	t.Helper()
 	m := &machine{f: &follower{}, stop: make(chan struct{}), port: port}
-	incoming, err := network.ListenAndAccept(port, "groupTestKey0123456", name, "127.0.0.1", nil, m.stop)
+	incoming, err := network.ListenAndAccept(port, "groupTestKey0123456", name, "127.0.0.1", nil, nil, m.stop)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,6 +100,16 @@ func onlineCount(g *Group) int {
 		}
 	}
 	return n
+}
+
+func TestSnapshotReportsWhichMachineSetTheLayout(t *testing.T) {
+	g := New(Options{
+		Name:   "me",
+		Layout: Layout{Order: []string{"peer", "me"}, Changed: 5, By: "peer"},
+	})
+	if got := g.Snapshot().LayoutBy; got != "peer" {
+		t.Fatalf("Snapshot().LayoutBy = %q, want %q so the GUI can say the order was set elsewhere", got, "peer")
+	}
 }
 
 func TestThreeMachinesJoinThroughOneAndShareTheCursor(t *testing.T) {

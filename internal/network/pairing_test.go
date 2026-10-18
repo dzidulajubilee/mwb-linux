@@ -155,7 +155,7 @@ func TestLinuxPeersAgreeOnOneSocket(t *testing.T) {
 		stop := make(chan struct{})
 		connectStop := make(chan struct{})
 
-		inB, err := ListenAndAccept(portB, pairingTestKey, "bravo", "127.0.0.1", nil, stop)
+		inB, err := ListenAndAccept(portB, pairingTestKey, "bravo", "127.0.0.1", nil, nil, stop)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -172,7 +172,7 @@ func TestLinuxPeersAgreeOnOneSocket(t *testing.T) {
 		stagger := time.Duration(rng.Intn(1500)) * time.Millisecond
 		go func() {
 			time.Sleep(stagger) // alpha boots after bravo
-			inA, err := ListenAndAccept(portA, pairingTestKey, "alpha", "127.0.0.1", nil, stop)
+			inA, err := ListenAndAccept(portA, pairingTestKey, "alpha", "127.0.0.1", nil, nil, stop)
 			if err != nil {
 				gotA <- nil
 				return
@@ -256,7 +256,7 @@ func connectedPair(t *testing.T) (dialer, acceptor *Conn) {
 	port := freePort(t)
 	stop := make(chan struct{})
 	t.Cleanup(func() { close(stop) })
-	in, err := ListenAndAccept(port, pairingTestKey, "bravo", "127.0.0.1", nil, stop)
+	in, err := ListenAndAccept(port, pairingTestKey, "bravo", "127.0.0.1", nil, nil, stop)
 	if err != nil {
 		t.Fatal(err)
 	}

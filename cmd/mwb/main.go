@@ -258,7 +258,12 @@ func main() {
 			"addresses", localAddresses(), "port", cfg.MessagePort())
 	}
 	serverStop := make(chan struct{})
-	incomingCh, err := network.ListenAndAccept(cfg.MessagePort(), cfg.Key, cfg.Name, allowedHost, onFile, serverStop)
+	onKeyMismatch := func(remote string) {
+		if err := statusFile.KeyMismatch(remote); err != nil {
+			slog.Debug("recording key mismatch failed", "err", err)
+		}
+	}
+	incomingCh, err := network.ListenAndAccept(cfg.MessagePort(), cfg.Key, cfg.Name, allowedHost, onFile, onKeyMismatch, serverStop)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error starting listener: %v\n", err)
 		fmt.Fprintln(os.Stderr, "Is another mwb instance already running?")

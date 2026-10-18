@@ -10,6 +10,7 @@ from __future__ import annotations
 import grp
 import ipaddress
 import json
+from datetime import datetime, timezone
 import os
 import pwd
 import shlex
@@ -349,6 +350,32 @@ def read_status(path: str | None = None) -> dict | None:
     return data
 
 
+# how long a recorded key mismatch is treated as current. The dialing peer
+# retries every few seconds, so a real mismatch keeps being re-recorded; once
+# the other machine stops trying, the warning fades rather than lingering.
+_KEY_MISMATCH_FRESH = 30.0
+
+
+def recent_key_mismatch(st: dict | None) -> str | None:
+    """The address of a machine that just tried a different security key, or
+    None. mwb records the time in UTC (RFC 3339); a stamp older than
+    _KEY_MISMATCH_FRESH seconds, or unparseable, counts as not current."""
+    if not st:
+        return None
+    who = st.get("key_mismatch_from")
+    when = st.get("key_mismatch_at")
+    if not who or not isinstance(when, str):
+        return None
+    try:
+        ts = datetime.fromisoformat(when.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    age = (datetime.now(timezone.utc) - ts).total_seconds()
+    if 0 <= age <= _KEY_MISMATCH_FRESH:
+        return str(who)
+    return None
+
+
 # --- what a connected status means for the user ---------------------------------
 
 CONTROL_SWITCH = "Control the other computer from here"
@@ -422,6 +449,16 @@ def describe_group(st: dict) -> tuple[str, str, str]:
         verb = "is" if len(offline) == 1 else "are"
         parts.append(f"{join_names(offline)} {verb} offline; the pointer skips "
                      f"{'its screen' if len(offline) == 1 else 'their screens'}.")
+    # The screen order can be set on any machine and the most recent choice
+    # wins everywhere. When it was set on another machine, a shared edge may
+    # sit on the opposite side from what this machine expects, so say where it
+    # came from and how to change it, rather than letting the crossing look
+    # broken. (A machine's own name is never in members, so a layout_by found
+    # among them was a peer's choice.)
+    by = str(st.get("layout_by") or "")
+    if by and by in {str(m["name"]) for m in members}:
+        parts.append(f"The screen order was set on {by}. If a computer is on the wrong side, "
+                     "drag the screens below into order and Save.")
     if older:
         kind = "error"
         verb = "runs" if len(older) == 1 else "run"

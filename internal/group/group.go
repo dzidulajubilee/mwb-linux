@@ -594,8 +594,18 @@ func (g *Group) layoutUpdated(before, after Layout, leftBefore, rightBefore, ori
 		}
 	}
 	left, right := Neighbors(after.Order, g.o.Name)
-	if (left != leftBefore || right != rightBefore) && g.o.NeighborsChanged != nil {
-		g.o.NeighborsChanged()
+	if left != leftBefore || right != rightBefore {
+		// A side change this machine did not originate came from the machine
+		// in after.By adopting its screen order. Say so plainly: otherwise the
+		// cursor silently stops crossing the edge the user expects, with no
+		// hint that the shared edge moved to the other side.
+		if !originated && after.By != "" && after.By != g.o.Name {
+			slog.Info("group: adopted the screen order from another machine; your shared edge moved to match it",
+				"by", after.By, "order", after.Order, "left", left, "right", right)
+		}
+		if g.o.NeighborsChanged != nil {
+			g.o.NeighborsChanged()
+		}
 	}
 }
 
@@ -756,13 +766,17 @@ type Snapshot struct {
 	Layout   []string
 	Location string
 	Members  []Member
+	// LayoutBy names the machine whose screen order the group is using, so the
+	// front end can show when the order (and thus the shared edge) was set on
+	// another machine rather than here. Empty when unknown.
+	LayoutBy string
 }
 
 // Snapshot returns the current state, members in layout order.
 func (g *Group) Snapshot() Snapshot {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	s := Snapshot{Layout: slices.Clone(g.layout.Order), Location: g.loc}
+	s := Snapshot{Layout: slices.Clone(g.layout.Order), Location: g.loc, LayoutBy: g.layout.By}
 	names := slices.Collect(maps.Keys(g.links))
 	slices.SortFunc(names, func(a, b string) int {
 		ia, ib := slices.Index(g.layout.Order, a), slices.Index(g.layout.Order, b)

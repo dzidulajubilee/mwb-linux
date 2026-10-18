@@ -92,6 +92,27 @@ func TestEmptyPathWriterIsNoOp(t *testing.T) {
 	nilWriter.Remove()
 }
 
+func TestKeyMismatchRecordedThenClearedOnConnect(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mwb", "status.json")
+	w := NewWriter(path, Status{Peer: "linux", Waiting: true})
+
+	if err := w.KeyMismatch("10.0.0.9:52100"); err != nil {
+		t.Fatal(err)
+	}
+	got := read(t, path)
+	if got.KeyMismatchFrom != "10.0.0.9:52100" || got.KeyMismatchAt.IsZero() {
+		t.Fatalf("after KeyMismatch: %+v", got)
+	}
+
+	// A real connection means the keys now match: the warning must clear.
+	if err := w.Connected("10.0.0.9", false); err != nil {
+		t.Fatal(err)
+	}
+	if got = read(t, path); got.KeyMismatchFrom != "" || !got.KeyMismatchAt.IsZero() {
+		t.Fatalf("key mismatch not cleared after Connected: %+v", got)
+	}
+}
+
 func read(t *testing.T, path string) Status {
 	t.Helper()
 	data, err := os.ReadFile(path)

@@ -1111,6 +1111,15 @@ class MainWindow(Gtk.ApplicationWindow):
             kind, title, detail = "error", "Stopped after an error", "Open Recent log below to see why."
         else:
             kind, title, detail = "off", "Not running", "Start mwb to connect to the other computer."
+        # A computer reaching this one with the wrong security key looks exactly
+        # like "not connected", so mwb records it and we say so plainly here,
+        # ahead of the generic connecting/waiting message, while it is current.
+        if not connected:
+            mismatch_from = service.recent_key_mismatch(st)
+            if mismatch_from:
+                kind, title = "error", "Different security key"
+                detail = (f"A computer at {mismatch_from} is trying to connect with a different "
+                          "security key. Set the same key on both computers, then they connect.")
         self.dot.set_kind(kind)
         self.status_title.set_markup(f"<b>{GLib.markup_escape_text(title)}</b>")
         self.status_detail.set_text(detail)

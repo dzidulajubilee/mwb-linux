@@ -30,12 +30,12 @@ func TestWaitingLinuxPeer(t *testing.T) {
 			defer close(connectStop)
 
 			// The waiting machine: no host, no outbound dial.
-			inW, err := ListenAndAccept(waitPort, pairingTestKey, waiterName, AcceptLocalNetwork, nil, stop)
+			inW, err := ListenAndAccept(waitPort, pairingTestKey, waiterName, AcceptLocalNetwork, nil, nil, stop)
 			if err != nil {
 				t.Fatal(err)
 			}
 			// The dialing machine: host set to the waiter, and listening too.
-			inD, err := ListenAndAccept(dialPort, pairingTestKey, dialerName, "127.0.0.1", nil, stop)
+			inD, err := ListenAndAccept(dialPort, pairingTestKey, dialerName, "127.0.0.1", nil, nil, stop)
 			if err != nil {
 				t.Fatal(err)
 			}

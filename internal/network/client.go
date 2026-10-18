@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -453,7 +454,13 @@ type InboundFile func(c *Conn, push bool)
 // allowedHost restricts inbound connections to the configured peer. Hostnames
 // are resolved once at listener startup; resolution failure disables inbound
 // connections while leaving the outbound retry path available.
-func ListenAndAccept(port int, securityKey, machineName, allowedHost string, onFile InboundFile, stop chan struct{}) (chan *Conn, error) {
+//
+// onKeyMismatch, when not nil, is called with the remote address whenever an
+// allowed source completes the secure-stream setup but its first packet fails
+// only on the magic number: that is a real peer using a different security
+// key, so the caller can tell the user instead of leaving it as a silent
+// "not connected". It may be nil.
+func ListenAndAccept(port int, securityKey, machineName, allowedHost string, onFile InboundFile, onKeyMismatch func(remote string), stop chan struct{}) (chan *Conn, error) {
 	connCh := make(chan *Conn, 1)
 	allow, allowedIPs, resolveErr := peerFilter(allowedHost)
 	if resolveErr != nil {
@@ -538,7 +545,17 @@ func ListenAndAccept(port int, securityKey, machineName, allowedHost string, onF
 				// first packet as its header and aborts on an unexpected type.
 				first, err := conn.RecvPacket()
 				if err != nil {
-					slog.Error("incoming first packet failed", "remote", raw.RemoteAddr(), "err", err)
+					if errors.Is(err, protocol.ErrMagicMismatch) {
+						// A real peer with a different security key, not noise:
+						// it was allowed by source and set up a secure stream.
+						slog.Warn("a computer tried to connect with a different security key; the keys must match on both machines",
+							"remote", raw.RemoteAddr())
+						if onKeyMismatch != nil {
+							onKeyMismatch(raw.RemoteAddr().String())
+						}
+					} else {
+						slog.Error("incoming first packet failed", "remote", raw.RemoteAddr(), "err", err)
+					}
 					_ = raw.Close()
 					return
 				}
