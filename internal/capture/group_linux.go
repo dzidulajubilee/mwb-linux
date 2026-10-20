@@ -14,8 +14,9 @@ import (
 // others follow the group's announcements of where it is (Arrive, Follow)
 // and forward their own input there.
 
-// switchToGroup hands the cursor to the machine past side of this screen.
-func (c *Capturer) switchToGroup(side string, y int32) {
+// switchToGroup hands the cursor to the machine past side of this screen,
+// where (x, y) is the point on this screen's edge the cursor left from.
+func (c *Capturer) switchToGroup(side string, x, y int32) {
 	t, self, ok := c.nav.Beyond("", side)
 	if !ok || self || t.Conn == nil {
 		return // no machine online that way: the edge is a wall
@@ -25,9 +26,17 @@ func (c *Capturer) switchToGroup(side string, y int32) {
 		return
 	}
 	c.lastSwitch = now
-	slog.Info("screen edge hit, moving the cursor", "edge", side, "to", t.Name, "y", y)
 
-	entryY := int32(float64(y) / float64(c.screen.Height) * 65535)
+	// The along-edge position: the height on a left/right edge, the horizontal
+	// offset on an up/down edge.
+	var along int32
+	if side == "up" || side == "down" {
+		along = clampWire(int32(int64(x) * 65535 / int64(max(1, c.screen.Width))))
+	} else {
+		along = clampWire(int32(int64(y) * 65535 / int64(max(1, c.screen.Height))))
+	}
+	slog.Info("screen edge hit, moving the cursor", "edge", side, "to", t.Name, "along", along)
+
 	c.mu.Lock()
 	c.active = false
 	c.switchSent = now
@@ -35,9 +44,7 @@ func (c *Capturer) switchToGroup(side string, y int32) {
 	c.at, c.conn = t.Name, t.Conn
 	c.remoteW, c.remoteH = t.Width, t.Height
 	c.edgeSide = side // the direction of travel: land on the far side of it
-	pixelX, entryX := c.remoteEntryLocked()
-	c.remoteX = pixelX
-	c.remoteY = int32(float64(y) / float64(c.screen.Height) * float64(c.remoteH))
+	entryX, entryY := c.remoteEntryLocked(along)
 	c.canReturn = false
 	conn, send := c.conn, c.sendFn
 	c.mu.Unlock()
@@ -46,7 +53,7 @@ func (c *Capturer) switchToGroup(side string, y int32) {
 	go func() {
 		// The announcement goes first on every connection, so the target
 		// knows the cursor is coming before the burst arrives.
-		c.nav.Moved(t.Name, group.Opposite(side), entryY)
+		c.nav.Moved(t.Name, group.Opposite(side), along)
 		sendEntryBurst(conn, send, entryX, entryY)
 	}()
 }
@@ -62,25 +69,34 @@ func (c *Capturer) crossRemoteLocked() bool {
 		side = "left"
 	case c.remoteX >= c.remoteW-1:
 		side = "right"
+	case c.remoteY <= 0:
+		side = "up"
+	case c.remoteY >= c.remoteH-1:
+		side = "down"
 	default:
 		return false
 	}
 	t, self, ok := c.nav.Beyond(c.at, side)
 	if !ok {
-		return false // the end of the row, or nobody online past it
+		return false // the end of the arrangement, or nobody online past it
 	}
-	yWire := int32(int64(c.remoteY) * 65535 / int64(max(1, c.remoteH)))
+	// The along-edge position on the edge being crossed: the vertical position
+	// on a left/right edge, the horizontal one on an up/down edge.
+	var along int32
+	if side == "up" || side == "down" {
+		along = clampWire(int32(int64(c.remoteX) * 65535 / int64(max(1, c.remoteW))))
+	} else {
+		along = clampWire(int32(int64(c.remoteY) * 65535 / int64(max(1, c.remoteH))))
+	}
 
 	if self {
 		slog.Info("cursor came back to this machine", "from", c.at, "side", group.Opposite(side))
 		c.at = ""
 		c.edgeSide = group.Opposite(side) // where it lands here
-		if c.screen.Height > 0 {
-			// SafeEntryPosition maps remoteY by remoteH; keep both in step.
-			c.remoteY = int32(int64(yWire) * int64(c.remoteH) / 65535)
-		}
+		// remoteX/remoteY already hold the along-edge position; SafeEntryPosition
+		// maps them to the local landing.
 		nav := c.nav
-		c.returnLocalLocked(func() { nav.Moved("", group.Opposite(side), yWire) })
+		c.returnLocalLocked(func() { nav.Moved("", group.Opposite(side), along) })
 		return true
 	}
 	if t.Conn == nil {
@@ -90,15 +106,13 @@ func (c *Capturer) crossRemoteLocked() bool {
 	c.at, c.conn = t.Name, t.Conn
 	c.remoteW, c.remoteH = t.Width, t.Height
 	c.edgeSide = side
-	pixelX, entryX := c.remoteEntryLocked()
-	c.remoteX = pixelX
-	c.remoteY = int32(int64(yWire) * int64(c.remoteH) / 65535)
+	entryX, entryY := c.remoteEntryLocked(along)
 	c.canReturn = false
 	c.switchSent = time.Now()
 	conn, send, nav := c.conn, c.sendFn, c.nav
 	c.mu.Unlock()
-	nav.Moved(t.Name, group.Opposite(side), yWire)
-	go sendEntryBurst(conn, send, entryX, yWire)
+	nav.Moved(t.Name, group.Opposite(side), along)
+	go sendEntryBurst(conn, send, entryX, entryY)
 	c.mu.Lock()
 	return true
 }
@@ -115,7 +129,13 @@ func (c *Capturer) Arrive(side string, y int32) {
 	if side != "" {
 		c.edgeSide = side
 	}
-	c.remoteY = int32(int64(y) * int64(c.remoteH) / 65535)
+	// Keep the along-edge position on the axis the entry side runs along, so the
+	// landing (SafeEntryPosition) matches where the cursor crossed.
+	if side == "up" || side == "down" {
+		c.remoteX = int32(int64(y) * int64(c.remoteW) / 65535)
+	} else {
+		c.remoteY = int32(int64(y) * int64(c.remoteH) / 65535)
+	}
 	c.mu.Unlock()
 	c.SetActive(true)
 }
@@ -137,11 +157,10 @@ func (c *Capturer) Follow(t group.Target, side string, y int32) {
 	c.remoteW, c.remoteH = t.Width, t.Height
 	c.edgeSide = group.Opposite(side) // the direction it travelled
 	if side == "" {
-		c.remoteX = c.remoteW / 2 // taken back without crossing an edge
+		c.remoteX, c.remoteY = c.remoteW/2, c.remoteH/2 // taken back without crossing an edge
 	} else {
-		c.remoteX, _ = c.remoteEntryLocked()
+		c.remoteEntryLocked(y) // y is the along-edge position; sets remoteX and remoteY
 	}
-	c.remoteY = int32(int64(y) * int64(c.remoteH) / 65535)
 	c.canReturn = false
 	c.mu.Unlock()
 	c.applyIsolation()

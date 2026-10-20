@@ -331,19 +331,19 @@ func TestRemoteLandingMatchesTrackedPositionAndRejectsBounce(t *testing.T) {
 	for _, width := range []int32{1920, 2560, 3840} {
 		for _, edge := range []string{"left", "right"} {
 			c := New(nil, ScreenInfo{Width: width, Height: 1080}, edge)
-			c.remoteW = width
-			pixel, wire := c.remoteEntryLocked()
+			c.remoteW, c.remoteH = width, 1080
+			xWire, _ := c.remoteEntryLocked(32767) // along the edge: middle
 			want := int32((int64(width)*5243 + 32767) / 65535)
 			if edge == "left" {
 				want = width - want
 			}
-			if pixel != want {
-				t.Fatalf("landing=%d want %d", pixel, want)
+			if c.remoteX != want {
+				t.Fatalf("landing=%d want %d", c.remoteX, want)
 			}
-			if wire != int32(int64(pixel)*65535/int64(width)) {
+			if xWire != int32(int64(c.remoteX)*65535/int64(width)) {
 				t.Fatal("wire and tracked positions disagree")
 			}
-			c.active, c.remoteX = false, pixel
+			c.active, c.remoteX = false, want
 			if c.AcceptsActivation() {
 				t.Fatal("accepted a bounce at entry")
 			}
@@ -484,9 +484,9 @@ func TestYieldToPeerIsolatesAndForwards(t *testing.T) {
 	if grabbed() != 2 {
 		t.Fatalf("grabbed %d of 2 devices; local input would leak", grabbed())
 	}
-	wantX, _ := c.remoteEntryLocked()
-	if c.remoteX != wantX || c.remoteY != 540 || c.canReturn {
-		t.Fatalf("virtual cursor at %d,%d canReturn=%v; want landing %d,540 with return gated",
+	wantX := remoteEntryInset(c.remoteW) // a right edge lands near the remote's left
+	if c.remoteX != wantX || abs32(c.remoteY-540) > 1 || c.canReturn {
+		t.Fatalf("virtual cursor at %d,%d canReturn=%v; want landing %d,~540 with return gated",
 			c.remoteX, c.remoteY, c.canReturn, wantX)
 	}
 	// A second HideMouse while already remote is a no-op.

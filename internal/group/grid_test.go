@@ -5,12 +5,12 @@ import (
 	"testing"
 )
 
-func TestOppositeSide(t *testing.T) {
+func TestOppositeAllSides(t *testing.T) {
 	for side, want := range map[string]string{
 		"left": "right", "right": "left", "up": "down", "down": "up", "": "", "x": "",
 	} {
-		if got := OppositeSide(side); got != want {
-			t.Errorf("OppositeSide(%q) = %q, want %q", side, got, want)
+		if got := Opposite(side); got != want {
+			t.Errorf("Opposite(%q) = %q, want %q", side, got, want)
 		}
 	}
 }

@@ -127,6 +127,8 @@ type Capturer struct {
 	at         string
 	watchLeft  bool
 	watchRight bool
+	watchUp    bool
+	watchDown  bool
 	edges      map[string]edgeSource // Wayland: one edge window per watched side
 }
 
@@ -137,10 +139,12 @@ type Navigator interface {
 	// this one); self reports that it is this machine.
 	Beyond(from, side string) (t group.Target, self, ok bool)
 	// Moved announces that this machine's input moved the cursor to the
-	// machine named to ("" = this one), entering from side at height y.
+	// machine named to ("" = this one), entering from side at the along-edge
+	// position y.
 	Moved(to, side string, y int32)
-	// Neighbors reports which sides of this screen border another machine.
-	Neighbors() (left, right bool)
+	// NeighborEdges reports every side of this screen that borders another
+	// machine: "left", "right", "up", "down".
+	NeighborEdges() map[string]bool
 }
 
 // SetNavigator puts the capturer in group mode. Call before Run.
@@ -150,7 +154,9 @@ func (c *Capturer) SetNavigator(n Navigator) {
 	c.nav = n
 	c.linuxPeer = false // group members learn where the cursor is from n
 	if n != nil {
-		c.watchLeft, c.watchRight = n.Neighbors()
+		e := n.NeighborEdges()
+		c.watchLeft, c.watchRight = e["left"], e["right"]
+		c.watchUp, c.watchDown = e["up"], e["down"]
 	}
 }
 
@@ -220,21 +226,32 @@ func (c *Capturer) IsActive() bool {
 func (c *Capturer) SafeEntryPosition() (x, y int32) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	y = c.screen.Height / 2
+	// The coordinate parallel to the shared edge follows where the cursor was
+	// on the remote screen; the one across it sits an inset in from the edge.
+	mapY := c.screen.Height / 2
 	if c.remoteH > 0 {
-		y = max(0, min(c.screen.Height-1, int32(int64(c.remoteY)*int64(c.screen.Height)/int64(c.remoteH))))
+		mapY = max(0, min(c.screen.Height-1, int32(int64(c.remoteY)*int64(c.screen.Height)/int64(c.remoteH))))
 	}
-	inset := entryInset(c.screen.Width)
+	mapX := c.screen.Width / 2
+	if c.remoteW > 0 {
+		mapX = max(0, min(c.screen.Width-1, int32(int64(c.remoteX)*int64(c.screen.Width)/int64(c.remoteW))))
+	}
 	switch c.edgeSide {
 	case "left":
-		x = inset
+		return entryInset(c.screen.Width), mapY
 	case "right":
-		x = c.screen.Width - inset
+		return c.screen.Width - entryInset(c.screen.Width), mapY
+	case "up":
+		return mapX, entryInset(c.screen.Height)
+	case "down":
+		return mapX, c.screen.Height - entryInset(c.screen.Height)
 	default:
-		x = c.screen.Width / 2
+		return c.screen.Width / 2, mapY
 	}
-	return x, y
 }
+
+// clampWire keeps an along-edge coordinate within MWB's 0-65535 space.
+func clampWire(v int32) int32 { return max(0, min(65535, v)) }
 
 // recenter runs before releasing grabbed input on every local return path.
 func (c *Capturer) recenter() {
@@ -256,14 +273,33 @@ func remoteEntryInset(width int32) int32 {
 	return max(1, int32((int64(width)*remoteEntryFraction+32767)/65535))
 }
 
-// remoteEntryLocked keeps the initial wire landing and virtual cursor aligned.
-func (c *Capturer) remoteEntryLocked() (pixel, wire int32) {
-	pixel = remoteEntryInset(c.remoteW)
-	if c.edgeSide == "left" {
-		pixel = c.remoteW - pixel
+// remoteEntryLocked places the virtual cursor after a crossing in direction
+// c.edgeSide, with alongWire (0-65535) its position along the edge it came
+// through. It sets c.remoteX and c.remoteY in pixels and returns the entry
+// position as wire coordinates (xWire, yWire) for the absolute burst.
+func (c *Capturer) remoteEntryLocked(alongWire int32) (xWire, yWire int32) {
+	switch c.edgeSide {
+	case "up", "down":
+		// Crossing a top/bottom edge: land an inset in across it, the along
+		// coordinate runs horizontally.
+		inset := remoteEntryInset(c.remoteH)
+		py := inset // moved down: land near the top
+		if c.edgeSide == "up" {
+			py = c.remoteH - inset
+		}
+		c.remoteY = py
+		c.remoteX = int32(int64(alongWire) * int64(c.remoteW) / 65535)
+		return int32(int64(c.remoteX) * 65535 / int64(max(1, c.remoteW))), int32(int64(py) * 65535 / int64(max(1, c.remoteH)))
+	default: // "left", "right"
+		inset := remoteEntryInset(c.remoteW)
+		px := inset // moved right: land near the left
+		if c.edgeSide == "left" {
+			px = c.remoteW - inset
+		}
+		c.remoteX = px
+		c.remoteY = int32(int64(alongWire) * int64(c.remoteH) / 65535)
+		return int32(int64(px) * 65535 / int64(max(1, c.remoteW))), alongWire
 	}
-	wire = int32(int64(pixel) * 65535 / int64(c.remoteW))
-	return
 }
 
 // AcceptsReclaim reports whether a remote NextMachine request is returning
@@ -424,10 +460,7 @@ func (c *Capturer) YieldToPeer() {
 	c.active = false
 	c.switchSent = time.Now()
 	c.edgeY = y
-	c.remoteX, _ = c.remoteEntryLocked()
-	if c.screen.Height > 0 {
-		c.remoteY = int32(int64(y) * int64(c.remoteH) / int64(c.screen.Height))
-	}
+	c.remoteEntryLocked(clampWire(int32(int64(y) * 65535 / int64(max(1, c.screen.Height)))))
 	c.canReturn = false
 	c.mu.Unlock()
 
@@ -827,7 +860,7 @@ func (c *Capturer) polledEdge(x int32) string {
 // crossLocalEdge hands the cursor on after it touched side of this screen.
 func (c *Capturer) crossLocalEdge(side string, x, y int32) {
 	if c.nav != nil {
-		c.switchToGroup(side, y)
+		c.switchToGroup(side, x, y)
 		return
 	}
 	c.switchToRemote(x, y)
@@ -865,17 +898,14 @@ func (c *Capturer) switchToRemote(x, y int32) {
 
 	slog.Info("screen edge hit, switching to remote", "edge", c.edgeSide, "x", x, "y", y)
 
-	// Map local Y to remote entry point (proportional)
-	entryY := int32(float64(y) / float64(c.screen.Height) * 65535)
-
 	c.mu.Lock()
 	c.active = false
 	c.switchSent = time.Now()
 	c.edgeY = y
-	// Use the same pixel position for the initial burst and motion.
-	pixelX, entryX := c.remoteEntryLocked()
-	c.remoteX = pixelX
-	c.remoteY = int32(float64(y) / float64(c.screen.Height) * float64(c.remoteH))
+	// A pair always shares a left/right edge; the along-edge coordinate is the
+	// height. remoteEntryLocked sets the virtual cursor and returns the burst
+	// landing.
+	entryX, entryY := c.remoteEntryLocked(clampWire(int32(int64(y) * 65535 / int64(max(1, c.screen.Height)))))
 	c.canReturn = false // must move away from return edge first
 	c.mu.Unlock()
 
@@ -1312,14 +1342,23 @@ func (c *Capturer) moveRemoteLocked(dx, dy int32) {
 
 	// Like the local edge gate, require deliberate inward movement before return.
 	// This prevents jitter/momentum from the initial switch from bouncing back.
-	returnZone := remoteEntryInset(c.remoteW)
+	// The gate is on the axis the cursor crossed: horizontal for a left/right
+	// entry, vertical for an up/down one.
 	switch c.edgeSide {
 	case "left":
-		if c.remoteX < c.remoteW-returnZone {
+		if c.remoteX < c.remoteW-remoteEntryInset(c.remoteW) {
 			c.canReturn = true
 		}
 	case "right":
-		if c.remoteX > returnZone {
+		if c.remoteX > remoteEntryInset(c.remoteW) {
+			c.canReturn = true
+		}
+	case "up":
+		if c.remoteY < c.remoteH-remoteEntryInset(c.remoteH) {
+			c.canReturn = true
+		}
+	case "down":
+		if c.remoteY > remoteEntryInset(c.remoteH) {
 			c.canReturn = true
 		}
 	}

@@ -28,22 +28,6 @@ var step = map[string]Pos{
 // them (tests, edge watching) and need the same result every time.
 var Sides = []string{"left", "right", "up", "down"}
 
-// OppositeSide returns the side facing the other way; "" for an unknown side.
-// It extends Opposite (left/right) with up/down.
-func OppositeSide(side string) string {
-	switch side {
-	case "left":
-		return "right"
-	case "right":
-		return "left"
-	case "up":
-		return "down"
-	case "down":
-		return "up"
-	}
-	return ""
-}
-
 // RowGrid places names left to right on a single row, so the layout the group
 // uses today becomes a 1×N grid with no change in meaning. Empty names are
 // skipped; a name repeated keeps its first cell.

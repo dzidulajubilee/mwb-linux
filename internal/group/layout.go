@@ -142,13 +142,17 @@ func Neighbors(order []string, me string) (left, right bool) {
 	return i > 0, i < len(order)-1
 }
 
-// Opposite returns the other side.
+// Opposite returns the other side, for all four directions.
 func Opposite(side string) string {
 	switch side {
 	case "left":
 		return "right"
 	case "right":
 		return "left"
+	case "up":
+		return "down"
+	case "down":
+		return "up"
 	}
 	return ""
 }
