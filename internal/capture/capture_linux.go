@@ -103,7 +103,6 @@ type Capturer struct {
 	// report ends (SYN_REPORT) rather than one per axis.
 	pendDX, pendDY int32
 	out            *outbox // nil until Run: sends then happen inline (tests)
-	edgeY          int32   // Y position where cursor left local screen
 	canSwitch      bool    // true once cursor has been away from edge since activation
 	canReturn      bool    // true once cursor has moved away from the remote return edge
 	hotkeyCtrl     bool    // tracks Ctrl key state for hotkey detection
@@ -459,7 +458,6 @@ func (c *Capturer) YieldToPeer() {
 	slog.Info("peer took the cursor back; forwarding local input to it")
 	c.active = false
 	c.switchSent = time.Now()
-	c.edgeY = y
 	c.remoteEntryLocked(clampWire(int32(int64(y) * 65535 / int64(max(1, c.screen.Height)))))
 	c.canReturn = false
 	c.mu.Unlock()
@@ -947,7 +945,6 @@ func (c *Capturer) switchToRemote(x, y int32) {
 	c.mu.Lock()
 	c.active = false
 	c.switchSent = time.Now()
-	c.edgeY = y
 	// A pair always shares a left/right edge; the along-edge coordinate is the
 	// height. remoteEntryLocked sets the virtual cursor and returns the burst
 	// landing.

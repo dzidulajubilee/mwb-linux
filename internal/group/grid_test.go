@@ -122,14 +122,3 @@ func TestParseAndFormatGrid(t *testing.T) {
 		t.Fatalf("bad entries not dropped: %v", bad)
 	}
 }
-
-func TestGridOrderRows(t *testing.T) {
-	grid := map[string]Pos{
-		"b1": {1, 1}, "a1": {0, 1}, "a0": {0, 0}, "b0": {1, 0},
-	}
-	got := GridOrderRows(grid)
-	want := [][]string{{"a0", "b0"}, {"a1", "b1"}}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("GridOrderRows = %v, want %v", got, want)
-	}
-}

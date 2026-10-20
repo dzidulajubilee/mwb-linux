@@ -32,16 +32,32 @@ type Layout struct {
 }
 
 // Grid returns the effective two-dimensional arrangement: Pos when set, else
-// the single row in Order. The result is a fresh map the caller may keep.
+// the single row in Order. A machine in Order but missing from Pos (one that
+// joined after the arrangement was set) is given a cell on a new column in the
+// top row, so every member always has a place and stays reachable. The result
+// is a fresh map the caller may keep.
 func (l Layout) Grid() map[string]Pos {
-	if len(l.Pos) > 0 {
-		out := make(map[string]Pos, len(l.Pos))
-		for n, p := range l.Pos {
-			out[n] = p
-		}
-		return out
+	if len(l.Pos) == 0 {
+		return RowGrid(l.Order)
 	}
-	return RowGrid(l.Order)
+	out := make(map[string]Pos, len(l.Pos))
+	maxCol := -1
+	for n, p := range l.Pos {
+		out[n] = p
+		if p.Col > maxCol {
+			maxCol = p.Col
+		}
+	}
+	for _, n := range l.Order {
+		if n == "" {
+			continue
+		}
+		if _, ok := out[n]; !ok {
+			maxCol++
+			out[n] = Pos{Col: maxCol, Row: 0}
+		}
+	}
+	return out
 }
 
 // Newer reports whether l is a more recent choice than other. Every machine

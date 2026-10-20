@@ -950,15 +950,6 @@ func (g *Group) Beyond(from, side string) (t Target, self, ok bool) {
 	return Target{Name: name, Conn: l.conn, Width: orDefault(l.width, defaultWidth), Height: orDefault(l.height, defaultHeight)}, false, true
 }
 
-// Neighbors reports whether another machine borders this one on the left or
-// right, online or not. It is the row view; NeighborEdges gives all four sides.
-func (g *Group) Neighbors() (left, right bool) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	e := Edges(g.layout.Grid(), g.o.Name)
-	return e["left"], e["right"]
-}
-
 // NeighborEdges reports every side of this machine's screen that borders
 // another machine in the arrangement, online or not: "left", "right", "up",
 // "down". The capturer watches exactly these edges.
@@ -1026,10 +1017,9 @@ func (g *Group) Snapshot() Snapshot {
 	defer g.mu.Unlock()
 	s := Snapshot{Layout: slices.Clone(g.layout.Order), Location: g.loc, LayoutBy: g.layout.By}
 	if len(g.layout.Pos) > 0 {
-		s.Pos = make(map[string]Pos, len(g.layout.Pos))
-		for n, p := range g.layout.Pos {
-			s.Pos[n] = p
-		}
+		// Grid(), not the raw Pos, so a machine that joined after the
+		// arrangement was set is included with its assigned cell.
+		s.Pos = g.layout.Grid()
 	}
 	names := slices.Collect(maps.Keys(g.links))
 	slices.SortFunc(names, func(a, b string) int {

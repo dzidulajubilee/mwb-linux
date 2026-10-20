@@ -119,10 +119,6 @@ func TestNeighborEdgesFromTheGrid(t *testing.T) {
 	if e := row.NeighborEdges(); !e["left"] || !e["right"] || e["up"] || e["down"] {
 		t.Fatalf("row edges = %v", e)
 	}
-	l, r := row.Neighbors()
-	if !l || !r {
-		t.Fatalf("row Neighbors() = %v,%v", l, r)
-	}
 
 	// A 2-D arrangement: a machine below me means a "down" edge, nothing left.
 	twoD := New(Options{Name: "me", Layout: Layout{
@@ -132,9 +128,6 @@ func TestNeighborEdgesFromTheGrid(t *testing.T) {
 	e := twoD.NeighborEdges()
 	if !e["right"] || !e["down"] || e["left"] || e["up"] {
 		t.Fatalf("2-D edges = %v", e)
-	}
-	if l, r := twoD.Neighbors(); l || !r {
-		t.Fatalf("2-D Neighbors() = %v,%v (want false,true)", l, r)
 	}
 }
 
@@ -349,7 +342,7 @@ func TestAdoptedTombstoneForANeighborRestartsCapture(t *testing.T) {
 	if !restarted {
 		t.Fatal("dropping a neighbour via a tombstone did not restart capture")
 	}
-	if l, _ := g.Neighbors(); l {
+	if g.NeighborEdges()["left"] {
 		t.Fatal("still reports a left neighbour after the only one was forgotten")
 	}
 }

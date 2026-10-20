@@ -70,12 +70,6 @@ func TestEdgeWindowHitSwitchesAndInwardMotionRearms(t *testing.T) {
 	if c.IsActive() || grabbed() != 2 {
 		t.Fatalf("edge hit did not switch: active=%v grabbed=%d", c.IsActive(), grabbed())
 	}
-	c.mu.Lock()
-	edgeY := c.edgeY
-	c.mu.Unlock()
-	if edgeY != 540 {
-		t.Fatalf("edgeY = %d, want 540", edgeY)
-	}
 
 	// Coming back disarms the edge; touching it again must not switch.
 	c.SetActive(true)

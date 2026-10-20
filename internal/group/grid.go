@@ -159,26 +159,3 @@ func ParseGrid(entries []string) map[string]Pos {
 	}
 	return out
 }
-
-// GridOrderRows returns the machines grouped into rows, each row left to right,
-// rows top to bottom. It lets a one-row consumer or a test read a grid back in
-// a stable order.
-func GridOrderRows(grid map[string]Pos) [][]string {
-	rowsByY := map[int][]string{}
-	ys := []int{}
-	for n := range grid {
-		y := grid[n].Row
-		if _, seen := rowsByY[y]; !seen {
-			ys = append(ys, y)
-		}
-		rowsByY[y] = append(rowsByY[y], n)
-	}
-	sort.Ints(ys)
-	out := make([][]string, 0, len(ys))
-	for _, y := range ys {
-		row := rowsByY[y]
-		sort.Slice(row, func(i, j int) bool { return grid[row[i]].Col < grid[row[j]].Col })
-		out = append(out, row)
-	}
-	return out
-}

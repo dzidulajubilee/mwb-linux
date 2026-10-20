@@ -178,9 +178,11 @@ class ArrangementView(Gtk.DrawingArea):
     def remove_screen(self, name: str):
         """Drop a screen from the row at once, so a forgotten machine leaves the
         picture without waiting for the service to restart and report back."""
-        if name not in self.order or name == self.me:
+        if name == self.me or (name not in self.order and name not in self.cells):
             return
         self.order = [n for n in self.order if n != name]
+        if name in self.cells:
+            del self.cells[name]
         self.offline.discard(name)
         if self._selected == name:
             self._selected = self.me
@@ -1069,10 +1071,16 @@ class MainWindow(Gtk.ApplicationWindow):
                     cells[name] = (int(p["c"]), int(p["r"]))
                 except (KeyError, TypeError, ValueError):
                     return {}
-            return cells if me in cells else {}
-        # No 2D positions saved: lay the row out as a single-row grid, so the
-        # drag works from a plain row too. Only for a real named group (no ME /
-        # OTHER placeholders), which the two-machine pairing view still uses.
+            if me in cells:
+                return cells
+        # No live positions (e.g. the service is stopped): use the grid saved in
+        # the config so a stopped service shows the real 2D arrangement instead
+        # of flattening it to a row.
+        saved = {n: p for n, p in self._loaded_grid_cells().items() if n not in hidden}
+        if me in saved and max((r for _, r in saved.values()), default=0) > 0:
+            return saved
+        # Otherwise lay the row out as a single-row grid, so the drag works from
+        # a plain row too — for a real named group only (no ME / OTHER).
         order = self._display_layout(me)
         if len(order) >= 2 and me in order and OTHER not in order and ME not in order:
             return {n: (i, 0) for i, n in enumerate(order)}

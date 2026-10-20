@@ -40,7 +40,6 @@ func (c *Capturer) switchToGroup(side string, x, y int32) {
 	c.mu.Lock()
 	c.active = false
 	c.switchSent = now
-	c.edgeY = y
 	c.at, c.conn = t.Name, t.Conn
 	c.remoteW, c.remoteH = t.Width, t.Height
 	c.edgeSide = side // the direction of travel: land on the far side of it
@@ -63,20 +62,31 @@ func (c *Capturer) switchToGroup(side string, x, y int32) {
 // It reports whether the cursor left that screen. c.mu must be held; it may
 // be released and re-acquired.
 func (c *Capturer) crossRemoteLocked() bool {
-	side := ""
-	switch {
-	case c.remoteX <= 0:
-		side = "left"
-	case c.remoteX >= c.remoteW-1:
-		side = "right"
-	case c.remoteY <= 0:
-		side = "up"
-	case c.remoteY >= c.remoteH-1:
-		side = "down"
-	default:
-		return false
+	// Every edge the virtual cursor is touching. At a corner more than one is,
+	// so try each and take the first with a machine beyond it: a wall on one
+	// side must not stop a crossing that another side allows.
+	var sides []string
+	if c.remoteX <= 0 {
+		sides = append(sides, "left")
 	}
-	t, self, ok := c.nav.Beyond(c.at, side)
+	if c.remoteX >= c.remoteW-1 {
+		sides = append(sides, "right")
+	}
+	if c.remoteY <= 0 {
+		sides = append(sides, "up")
+	}
+	if c.remoteY >= c.remoteH-1 {
+		sides = append(sides, "down")
+	}
+	var side string
+	var t group.Target
+	var self, ok bool
+	for _, s := range sides {
+		if tt, sf, o := c.nav.Beyond(c.at, s); o {
+			side, t, self, ok = s, tt, sf, o
+			break
+		}
+	}
 	if !ok {
 		return false // the end of the arrangement, or nobody online past it
 	}

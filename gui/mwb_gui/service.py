@@ -17,6 +17,7 @@ import shlex
 import shutil
 import socket
 import subprocess
+import time
 from dataclasses import dataclass
 
 UNIT = "mwb.service"
@@ -358,12 +359,22 @@ def client_version() -> str:
     return _client_version
 
 
+_forgotten_cache: tuple = (0.0, frozenset())
+
+
 def forgotten_names(directory: str | None = None) -> set:
     """Machines the client has been told to forget: the tombstones it has
     recorded (forgotten.json) plus any request not yet consumed
     (forget-request.json). The front end hides these from the arrangement and
     never saves them back, so a forgotten machine cannot reappear from a stale
-    config or a save. Missing or corrupt files mean an empty set."""
+    config or a save. Missing or corrupt files mean an empty set. The default
+    (state-dir) read is cached briefly, since several helpers call it per poll."""
+    global _forgotten_cache
+    use_cache = directory is None
+    if use_cache:
+        ts, cached = _forgotten_cache
+        if time.monotonic() - ts < 0.5:
+            return set(cached)
     directory = state_dir() if directory is None else directory
     names: set = set()
     try:
@@ -380,6 +391,8 @@ def forgotten_names(directory: str | None = None) -> set:
             names |= {str(n) for n in data if isinstance(n, str)}
     except (OSError, ValueError):
         pass
+    if use_cache:
+        _forgotten_cache = (time.monotonic(), frozenset(names))
     return names
 
 

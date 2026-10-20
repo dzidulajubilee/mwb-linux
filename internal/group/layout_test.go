@@ -16,6 +16,23 @@ func TestLayoutGridAndEqualWithPositions(t *testing.T) {
 		t.Fatalf("2-D Grid() = %+v", g)
 	}
 
+	// A machine that joined after the arrangement was set (in Order, not in Pos)
+	// still gets a cell, so it stays reachable.
+	joined := Layout{
+		Order: []string{"a", "b", "c"},
+		Pos:   map[string]Pos{"a": {0, 0}, "b": {0, 1}},
+	}
+	g := joined.Grid()
+	if len(g) != 3 {
+		t.Fatalf("a newly joined machine was dropped from the grid: %+v", g)
+	}
+	if _, ok := g["c"]; !ok || g["c"].Row != 0 {
+		t.Fatalf("newcomer c has no top-row cell: %+v", g)
+	}
+	if g["c"] == g["a"] || g["c"] == g["b"] {
+		t.Fatalf("newcomer c shares a cell: %+v", g)
+	}
+
 	// Equal: positions are part of the identity of a choice.
 	base := Layout{Order: []string{"a", "b"}, Pos: map[string]Pos{"a": {0, 0}, "b": {0, 1}}, Changed: 5, By: "a"}
 	same := Layout{Order: []string{"a", "b"}, Pos: map[string]Pos{"a": {0, 0}, "b": {0, 1}}, Changed: 5, By: "a"}
