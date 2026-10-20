@@ -10,8 +10,10 @@ import "sort"
 
 // Pos is a screen's place in the arrangement: Col increases to the right, Row
 // increases downward. The current one-row layout is every screen on Row 0.
+// The short JSON tags keep it compact on the wire.
 type Pos struct {
-	Col, Row int
+	Col int `json:"c"`
+	Row int `json:"r"`
 }
 
 // step is how one cell offset maps to each side.

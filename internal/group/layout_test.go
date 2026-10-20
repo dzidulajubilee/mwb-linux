@@ -5,6 +5,34 @@ import (
 	"testing"
 )
 
+func TestLayoutGridAndEqualWithPositions(t *testing.T) {
+	// Grid: a row layout derives positions; a 2-D layout returns its own.
+	row := Layout{Order: []string{"a", "b", "c"}}
+	if g := row.Grid(); g["a"] != (Pos{0, 0}) || g["c"] != (Pos{2, 0}) {
+		t.Fatalf("row Grid() = %+v", g)
+	}
+	twoD := Layout{Order: []string{"a", "b"}, Pos: map[string]Pos{"a": {0, 0}, "b": {0, 1}}}
+	if g := twoD.Grid(); g["b"] != (Pos{0, 1}) {
+		t.Fatalf("2-D Grid() = %+v", g)
+	}
+
+	// Equal: positions are part of the identity of a choice.
+	base := Layout{Order: []string{"a", "b"}, Pos: map[string]Pos{"a": {0, 0}, "b": {0, 1}}, Changed: 5, By: "a"}
+	same := Layout{Order: []string{"a", "b"}, Pos: map[string]Pos{"a": {0, 0}, "b": {0, 1}}, Changed: 5, By: "a"}
+	diff := Layout{Order: []string{"a", "b"}, Pos: map[string]Pos{"a": {0, 0}, "b": {1, 0}}, Changed: 5, By: "a"}
+	if !base.Equal(same) {
+		t.Fatal("identical layouts with the same positions should be equal")
+	}
+	if base.Equal(diff) {
+		t.Fatal("different positions must make layouts unequal")
+	}
+	// A row and the same machines placed in that row are different objects but
+	// the row has no explicit Pos, so Equal distinguishes them (one has Pos).
+	if base.Equal(Layout{Order: []string{"a", "b"}, Changed: 5, By: "a"}) {
+		t.Fatal("a layout with positions differs from the bare row")
+	}
+}
+
 func TestLayoutNewer(t *testing.T) {
 	old := Layout{Order: []string{"a", "b"}, Changed: 100, By: "a"}
 	newer := Layout{Order: []string{"b", "a"}, Changed: 200, By: "b"}

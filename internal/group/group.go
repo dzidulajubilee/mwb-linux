@@ -156,6 +156,24 @@ func (g *Group) isForgotten(name string) bool {
 	return ok
 }
 
+// dropForgottenPos removes tombstoned machines from a position map, returning
+// nil when nothing is left. A row layout (nil Pos) is unaffected.
+func (g *Group) dropForgottenPos(pos map[string]Pos) map[string]Pos {
+	if len(pos) == 0 || len(g.forgotten) == 0 {
+		return pos
+	}
+	out := make(map[string]Pos, len(pos))
+	for n, p := range pos {
+		if !g.isForgotten(n) {
+			out[n] = p
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // withoutForgotten returns order with every tombstoned name removed.
 func (g *Group) withoutForgotten(order []string) []string {
 	if len(g.forgotten) == 0 {
@@ -634,6 +652,7 @@ func (g *Group) applyInfo(from *link, doc []byte) {
 	if forgetChanged {
 		capForgotten(g.forgotten)
 		g.layout.Order = g.withoutForgotten(g.layout.Order)
+		g.layout.Pos = g.dropForgottenPos(g.layout.Pos)
 	}
 
 	var start []*link
@@ -673,6 +692,7 @@ func (g *Group) applyInfo(from *link, doc []byte) {
 	if len(theirs.Order) > 0 && theirs.Newer(g.layout) {
 		g.layout = theirs
 		g.layout.Order = g.withoutForgotten(theirs.Order)
+		g.layout.Pos = g.dropForgottenPos(theirs.Pos)
 	}
 	bumped := g.completeLocked()
 	after := g.layout
@@ -770,6 +790,7 @@ func (g *Group) Start() {
 	removed := len(stripped) != len(before.Order)
 	if removed {
 		g.layout.Order = stripped
+		g.layout.Pos = g.dropForgottenPos(g.layout.Pos)
 		g.layout.Changed, g.layout.By = time.Now().Unix(), g.o.Name
 	}
 	bumped := g.completeLocked()
@@ -873,6 +894,7 @@ func (g *Group) Forget(name string) {
 	before := g.layout
 	leftBefore, rightBefore := Neighbors(before.Order, g.o.Name)
 	g.layout.Order = g.withoutForgotten(g.layout.Order)
+	g.layout.Pos = g.dropForgottenPos(g.layout.Pos)
 	removed := !slices.Equal(before.Order, g.layout.Order)
 	if removed {
 		g.layout.Changed, g.layout.By = now, g.o.Name
@@ -979,6 +1001,9 @@ type Snapshot struct {
 	Layout   []string
 	Location string
 	Members  []Member
+	// Pos is the two-dimensional arrangement, when the group has one; nil for a
+	// plain row (then Layout is the arrangement). The front end draws from it.
+	Pos map[string]Pos
 	// LayoutBy names the machine whose screen order the group is using, so the
 	// front end can show when the order (and thus the shared edge) was set on
 	// another machine rather than here. Empty when unknown.
@@ -990,6 +1015,12 @@ func (g *Group) Snapshot() Snapshot {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	s := Snapshot{Layout: slices.Clone(g.layout.Order), Location: g.loc, LayoutBy: g.layout.By}
+	if len(g.layout.Pos) > 0 {
+		s.Pos = make(map[string]Pos, len(g.layout.Pos))
+		for n, p := range g.layout.Pos {
+			s.Pos[n] = p
+		}
+	}
 	names := slices.Collect(maps.Keys(g.links))
 	slices.SortFunc(names, func(a, b string) int {
 		ia, ib := slices.Index(g.layout.Order, a), slices.Index(g.layout.Order, b)

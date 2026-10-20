@@ -15,6 +15,11 @@ type Info struct {
 	Layout    []string `json:"layout"`
 	LayoutAge int64    `json:"layout_age"`
 	LayoutBy  string   `json:"layout_by,omitempty"`
+	// Pos is the two-dimensional arrangement, when the sender has one. Absent
+	// for a plain row, and ignored by a build that only knows the row, so a
+	// mixed group keeps working: an older machine reads Layout, a newer one
+	// prefers Pos. Travels with the layout it belongs to.
+	Pos map[string]Pos `json:"pos,omitempty"`
 	// Members maps machine names to an address the sender reaches them at.
 	Members map[string]string `json:"members,omitempty"`
 	// Forgotten maps a machine the sender was told to forget to how long ago
@@ -51,8 +56,15 @@ func encodeInfo(l Layout, members map[string]string, forgotten map[string]int64,
 			ages[n] = max(0, now.Unix()-at)
 		}
 	}
+	var pos map[string]Pos
+	if len(l.Pos) > 0 {
+		pos = make(map[string]Pos, len(l.Pos))
+		for n, p := range l.Pos {
+			pos[n] = p
+		}
+	}
 	return json.Marshal(Info{
-		V: infoVersion, Layout: l.Order, LayoutAge: age, LayoutBy: l.By,
+		V: infoVersion, Layout: l.Order, LayoutAge: age, LayoutBy: l.By, Pos: pos,
 		Members: members, Forgotten: ages, Width: w, Height: h, Sharing: sharing, Epoch: epoch, Port: port,
 	})
 }
@@ -75,6 +87,23 @@ func decodeInfo(doc []byte, now time.Time) (Info, Layout, error) {
 	}
 	if in.LayoutAge >= 0 {
 		l.Changed = now.Unix() - in.LayoutAge
+	}
+	// Two-dimensional positions, when the sender sent any. Keep only real names
+	// within the arrangement bounds, so a bad document cannot place a screen far
+	// off the grid.
+	if len(in.Pos) > 0 {
+		pos := make(map[string]Pos, len(in.Pos))
+		for n, p := range in.Pos {
+			if validName(n) && p.Col >= 0 && p.Row >= 0 && p.Col < MaxMachines && p.Row < MaxMachines && len(pos) < MaxMachines {
+				pos[n] = p
+			}
+		}
+		in.Pos = pos
+		if len(pos) > 0 {
+			l.Pos = pos
+		}
+	} else {
+		in.Pos = nil
 	}
 	members := map[string]string{}
 	for n, addr := range in.Members {

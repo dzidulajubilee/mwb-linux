@@ -12,15 +12,36 @@ import (
 // MaxMachines is the largest group, this machine included.
 const MaxMachines = 6
 
-// Layout is the left-to-right order of the screens, by machine name.
+// Layout is the arrangement of the screens, by machine name.
 type Layout struct {
+	// Order is the left-to-right row. It is always kept as the row projection
+	// of the arrangement, so a machine that knows nothing of two dimensions
+	// (and an older build) still sees a sensible sequence.
 	Order []string
+	// Pos is the two-dimensional arrangement: each machine's column (left to
+	// right) and row (top to bottom). Empty means the arrangement is simply the
+	// one row in Order; then Grid derives positions from it. When Pos is set it
+	// is authoritative, and Order is its row projection.
+	Pos map[string]Pos
 	// Changed is when the order was chosen, in this machine's Unix seconds;
 	// 0 means unknown, older than any known choice. Peers send an age rather
 	// than a time, so clocks need not agree.
 	Changed int64
 	// By names the machine that made the choice; it settles a tie.
 	By string
+}
+
+// Grid returns the effective two-dimensional arrangement: Pos when set, else
+// the single row in Order. The result is a fresh map the caller may keep.
+func (l Layout) Grid() map[string]Pos {
+	if len(l.Pos) > 0 {
+		out := make(map[string]Pos, len(l.Pos))
+		for n, p := range l.Pos {
+			out[n] = p
+		}
+		return out
+	}
+	return RowGrid(l.Order)
 }
 
 // Newer reports whether l is a more recent choice than other. Every machine
@@ -37,7 +58,21 @@ func (l Layout) Newer(other Layout) bool {
 
 // Equal reports whether both describe the same choice.
 func (l Layout) Equal(other Layout) bool {
-	return l.Changed == other.Changed && l.By == other.By && slices.Equal(l.Order, other.Order)
+	return l.Changed == other.Changed && l.By == other.By &&
+		slices.Equal(l.Order, other.Order) && samePos(l.Pos, other.Pos)
+}
+
+// samePos reports whether two position maps hold the same cells.
+func samePos(a, b map[string]Pos) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for n, p := range a {
+		if q, ok := b[n]; !ok || q != p {
+			return false
+		}
+	}
+	return true
 }
 
 // Complete returns order with every machine in names present exactly once.
