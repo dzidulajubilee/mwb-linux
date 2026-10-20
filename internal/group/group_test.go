@@ -113,6 +113,31 @@ func TestSnapshotReportsWhichMachineSetTheLayout(t *testing.T) {
 	}
 }
 
+func TestNeighborEdgesFromTheGrid(t *testing.T) {
+	// A row: this machine in the middle borders left and right only.
+	row := New(Options{Name: "me", Layout: Layout{Order: []string{"a", "me", "b"}}})
+	if e := row.NeighborEdges(); !e["left"] || !e["right"] || e["up"] || e["down"] {
+		t.Fatalf("row edges = %v", e)
+	}
+	l, r := row.Neighbors()
+	if !l || !r {
+		t.Fatalf("row Neighbors() = %v,%v", l, r)
+	}
+
+	// A 2-D arrangement: a machine below me means a "down" edge, nothing left.
+	twoD := New(Options{Name: "me", Layout: Layout{
+		Order: []string{"me", "right"},
+		Pos:   map[string]Pos{"me": {0, 0}, "right": {1, 0}, "below": {0, 1}},
+	}})
+	e := twoD.NeighborEdges()
+	if !e["right"] || !e["down"] || e["left"] || e["up"] {
+		t.Fatalf("2-D edges = %v", e)
+	}
+	if l, r := twoD.Neighbors(); l || !r {
+		t.Fatalf("2-D Neighbors() = %v,%v (want false,true)", l, r)
+	}
+}
+
 func TestFileCopyTargetsHybrid(t *testing.T) {
 	g := New(Options{Name: "me"})
 	a := g.newLinkLocked("a")

@@ -939,7 +939,7 @@ func (g *Group) Beyond(from, side string) (t Target, self, ok bool) {
 		l := g.links[n]
 		return l != nil && l.conn != nil
 	}
-	name, ok := Beyond(g.layout.Order, online, from, side)
+	name, ok := BeyondGrid(g.layout.Grid(), online, from, side)
 	if !ok {
 		return Target{}, false, false
 	}
@@ -950,12 +950,22 @@ func (g *Group) Beyond(from, side string) (t Target, self, ok bool) {
 	return Target{Name: name, Conn: l.conn, Width: orDefault(l.width, defaultWidth), Height: orDefault(l.height, defaultHeight)}, false, true
 }
 
-// Neighbors reports which sides of this machine's screen border another
-// machine in the layout, online or not.
+// Neighbors reports whether another machine borders this one on the left or
+// right, online or not. It is the row view; NeighborEdges gives all four sides.
 func (g *Group) Neighbors() (left, right bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return Neighbors(g.layout.Order, g.o.Name)
+	e := Edges(g.layout.Grid(), g.o.Name)
+	return e["left"], e["right"]
+}
+
+// NeighborEdges reports every side of this machine's screen that borders
+// another machine in the arrangement, online or not: "left", "right", "up",
+// "down". The capturer watches exactly these edges.
+func (g *Group) NeighborEdges() map[string]bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return Edges(g.layout.Grid(), g.o.Name)
 }
 
 func (g *Group) saveMembers() {
