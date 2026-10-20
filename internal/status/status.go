@@ -67,6 +67,9 @@ type Status struct {
 	Layout   []string       `json:"layout,omitempty"`
 	Members  []group.Member `json:"members,omitempty"`
 	Location string         `json:"location,omitempty"`
+	// Pos is the two-dimensional arrangement (column and row per machine) when
+	// the group has one; absent for a plain row. mwb-gui draws from it.
+	Pos map[string]group.Pos `json:"pos,omitempty"`
 	// LayoutBy names the machine whose screen order is in effect. mwb-gui
 	// shows it when another machine set the order, so a shared edge that moved
 	// to the far side does not look like a broken crossing.
@@ -159,6 +162,7 @@ func (w *Writer) Group(snap group.Snapshot) error {
 		s.Group = true
 		s.Layout, s.Members, s.Location = snap.Layout, snap.Members, snap.Location
 		s.LayoutBy = snap.LayoutBy
+		s.Pos = snap.Pos
 		var online []string
 		for _, m := range snap.Members {
 			if m.Online {

@@ -383,6 +383,38 @@ def forgotten_names(directory: str | None = None) -> set:
     return names
 
 
+def grid_extent(cells: dict) -> tuple:
+    """(columns, rows) spanning a position map {name: (col, row)}; (0, 0) when
+    empty. Used to lay out the two-dimensional arrangement."""
+    if not cells:
+        return (0, 0)
+    return (max(c for c, _ in cells.values()) + 1, max(r for _, r in cells.values()) + 1)
+
+
+def grid_rects(cells: dict, aspects: dict, width: float, height: float,
+               pad: float = 10.0, label_h: float = 40.0) -> dict:
+    """Pixel rect (x, y, w, h) for each screen placed in its grid cell, sized to
+    its aspect ratio and fit inside the cell with room for a label below.
+    width/height is the drawing area. Pure, so it can be tested without GTK."""
+    cols, rows = grid_extent(cells)
+    if cols == 0 or rows == 0:
+        return {}
+    cell_w, cell_h = width / cols, height / rows
+    out = {}
+    for name, (c, r) in cells.items():
+        avail_w = max(1.0, cell_w - 2 * pad)
+        avail_h = max(1.0, cell_h - 2 * pad - label_h)
+        asp = aspects.get(name, 16 / 9)
+        w = avail_w
+        h = w / asp
+        if h > avail_h:
+            h, w = avail_h, avail_h * asp
+        cx = c * cell_w + cell_w / 2
+        top = r * cell_h + (cell_h - label_h - h) / 2
+        out[name] = (cx - w / 2, top, w, h)
+    return out
+
+
 def forgettable(name: str, me: str, offline: set, running: bool, linux_group: bool) -> bool:
     """Whether a selected screen in the arrangement can be removed from the
     group. Only a real, named Linux computer other than this one; and while the

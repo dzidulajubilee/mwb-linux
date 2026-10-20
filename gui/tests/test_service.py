@@ -120,6 +120,24 @@ class StatusFileTests(unittest.TestCase):
             f.write("{not json")
         self.assertEqual(service.forgotten_names(d), {"pending", "mystogan"})
 
+    def test_grid_extent_and_rects(self):
+        self.assertEqual(service.grid_extent({}), (0, 0))
+        cells = {"a": (0, 0), "b": (1, 0), "c": (0, 1)}
+        self.assertEqual(service.grid_extent(cells), (2, 2))
+        rects = service.grid_rects(cells, {}, 800, 400, pad=10, label_h=40)
+        self.assertEqual(set(rects), {"a", "b", "c"})
+        for name, (x, y, w, h) in rects.items():
+            self.assertGreater(w, 0)
+            self.assertGreater(h, 0)
+            self.assertGreaterEqual(x, 0)
+            self.assertGreaterEqual(y, 0)
+            self.assertLessEqual(x + w, 800 + 1)
+            self.assertLessEqual(y + h, 400 + 1)
+        # Column 0 cells ("a","c") share a horizontal centre; "b" sits to the right.
+        self.assertLess(rects["a"][0], rects["b"][0])
+        self.assertAlmostEqual(rects["a"][0], rects["c"][0], delta=1.0)
+        self.assertLess(rects["a"][1], rects["c"][1])  # a above c
+
     def test_forgettable_gating(self):
         f = service.forgettable
         # Running: only an offline, named peer that is not this computer.

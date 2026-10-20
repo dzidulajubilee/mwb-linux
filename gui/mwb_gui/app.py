@@ -96,6 +96,7 @@ class ArrangementView(Gtk.DrawingArea):
     def __init__(self, on_changed, on_select=None):
         super().__init__()
         self.order: list[str] = [ME, OTHER]
+        self.cells: dict[str, tuple[int, int]] = {}  # name -> (col,row); empty = plain row
         self.me = ME
         self.titles: dict[str, str] = {}
         self.kinds: dict[str, str] = {}
@@ -108,6 +109,7 @@ class ArrangementView(Gtk.DrawingArea):
         self._selected = ME
         self._drag = None  # (index, start_x, current_dx) while dragging
         self._rects: list[tuple[str, float, float]] = []  # (name, x, w) as last drawn
+        self._grid_rects: dict[str, tuple[float, float, float, float]] = {}  # name -> (x,y,w,h), 2D draw
 
         self.set_content_height(176)
         self.set_hexpand(True)
@@ -134,10 +136,25 @@ class ArrangementView(Gtk.DrawingArea):
         order = list(order) or [me]
         if me not in order:
             order.append(me)
-        if order == self.order and me == self.me:
+        if order == self.order and me == self.me and not self.cells:
             return
-        self.order, self.me = order, me
+        self.order, self.me, self.cells = order, me, {}
         if self._selected not in order:
+            self._selected = me
+        self.refresh()
+
+    def set_grid(self, cells: dict, me: str):
+        """Show a two-dimensional arrangement: {name: (col, row)}. order is kept
+        as the row projection (top-to-bottom, left-to-right) for the parts that
+        still think in a row."""
+        cells = {str(n): (int(c), int(r)) for n, (c, r) in cells.items()}
+        if me not in cells:
+            cells[me] = (max((c for c, _ in cells.values()), default=-1) + 1, 0)
+        order = sorted(cells, key=lambda n: (cells[n][1], cells[n][0]))
+        if cells == self.cells and me == self.me:
+            return
+        self.cells, self.order, self.me = cells, order, me
+        if self._selected not in cells:
             self._selected = me
         self.refresh()
 
@@ -200,27 +217,47 @@ class ArrangementView(Gtk.DrawingArea):
 
     # --- input -------------------------------------------------------------
 
+    def _is_grid(self) -> bool:
+        return bool(self.cells) and max((r for _, r in self.cells.values()), default=0) > 0
+
+    def _cell_at(self, x: float, y: float) -> str:
+        for name, (rx, ry, rw, rh) in self._grid_rects.items():
+            if rx <= x < rx + rw and ry <= y < ry + rh:
+                return name
+        return ""
+
     def _index_at(self, x: float) -> int:
         for i, (_n, sx, w) in enumerate(self._rects):
             if sx <= x < sx + w:
                 return i
         return -1
 
-    def _drag_begin(self, _g, x, _y):
+    def _drag_begin(self, _g, x, y):
         self.grab_focus()
+        if self._is_grid():
+            # Two-dimensional arrangement: a click selects; drag-to-move is not
+            # wired yet, so just remember where the press started.
+            self._drag = ("grid", x, y)
+            return
         i = self._index_at(x)
         self._drag = (i, x, 0.0) if i >= 0 else None
 
     def _drag_update(self, _g, dx, _dy):
-        if self._drag is not None and len(self.order) > 2:
+        if self._drag is not None and self._drag[0] != "grid" and len(self.order) > 2:
             i, x0, _ = self._drag
             self._drag = (i, x0, dx)
             self.queue_draw()
 
-    def _drag_end(self, _g, dx, _dy):
+    def _drag_end(self, _g, dx, dy):
         drag, self._drag = self._drag, None
         if drag is None:
             self.queue_draw()
+            return
+        if drag[0] == "grid":
+            if abs(dx) < self.DRAG_THRESHOLD and abs(dy) < self.DRAG_THRESHOLD:
+                name = self._cell_at(drag[1], drag[2])
+                if name:
+                    self._select(name)
             return
         i, x0, _ = drag
         name = self.order[i]
@@ -275,6 +312,10 @@ class ArrangementView(Gtk.DrawingArea):
         return h
 
     def _draw(self, _area, cr, width, height):
+        if self._is_grid():
+            self._draw_grid(cr, width, height)
+            return
+        self._grid_rects = {}
         fg, accent = _theme_colors(self)
         label_h = 44
         max_h = height - label_h - 16
@@ -355,6 +396,69 @@ class ArrangementView(Gtk.DrawingArea):
         if dragging is not None:
             name, sx, w = dragging
             screen(name, sx, w, lifted=True)
+
+        if self.has_focus():
+            _rounded_rect(cr, 2, 2, width - 4, height - 4, 10)
+            cr.set_source_rgba(accent.red, accent.green, accent.blue, 0.7)
+            cr.set_line_width(2)
+            cr.stroke()
+
+    def _draw_grid(self, cr, width, height):
+        """Draw the screens in two dimensions, each in its grid cell, with
+        connectors where neighbouring screens touch."""
+        fg, accent = _theme_colors(self)
+        rects = service.grid_rects(self.cells, self.aspects, width, height, pad=12, label_h=40)
+        self._grid_rects = rects
+
+        # Connectors between cells that are side by side or stacked.
+        at = {cell: name for name, cell in self.cells.items()}
+        for name, (c, r) in self.cells.items():
+            if name not in rects:
+                continue
+            x, y, w, h = rects[name]
+            for dc, dr in ((1, 0), (0, 1)):  # right and down neighbours only (each pair once)
+                nb = at.get((c + dc, r + dr))
+                if nb is None or nb not in rects:
+                    continue
+                nx, ny, nw, nh = rects[nb]
+                touches_me = self.me in (name, nb)
+                live = name not in self.offline and nb not in self.offline
+                cr.set_source_rgba(accent.red, accent.green, accent.blue, 1.0 if touches_me else 0.45)
+                cr.set_line_width(4 if touches_me else 3)
+                cr.set_line_cap(1)
+                if dc == 1:  # horizontal neighbour: vertical seam between them
+                    sx = (x + w + nx) / 2
+                    y0, y1 = max(y, ny), min(y + h, ny + nh)
+                    cr.move_to(sx, y0 + 6)
+                    cr.line_to(sx, y1 - 6)
+                else:  # vertical neighbour: horizontal seam between them
+                    sy = (y + h + ny) / 2
+                    x0, x1 = max(x, nx), min(x + w, nx + nw)
+                    cr.move_to(x0 + 6, sy)
+                    cr.line_to(x1 - 6, sy)
+                cr.stroke()
+
+        for name, (x, y, w, h) in rects.items():
+            local = name == self.me
+            away = name in self.offline
+            _rounded_rect(cr, x, y, w, h, 8)
+            fill, stroke = (accent, accent) if local else (fg, fg)
+            cr.set_source_rgba(fill.red, fill.green, fill.blue, 0.16 if local else (0.02 if away else 0.05))
+            cr.fill_preserve()
+            cr.set_source_rgba(stroke.red, stroke.green, stroke.blue,
+                               0.9 if local else (0.2 if away else 0.35))
+            cr.set_line_width(2.5 if name == self._selected and self.has_focus() else 1.5)
+            if away:
+                cr.set_dash([5, 4])
+            cr.stroke()
+            cr.set_dash([])
+            label_w = max(8, w - 8)
+            self._text(cr, self.title(name), x + w / 2, y + h + 4, fg, 0.95 if not away else 0.6,
+                       bold=True, max_w=label_w)
+            sub = "This computer" if local else ("Offline" if away else self.kinds.get(name, "Linux computer"))
+            if name == self.location and self.connected:
+                sub = "Pointer is here" if not local else "This computer · pointer here"
+            self._text(cr, sub, x + w / 2, y + h + 22, fg, 0.6, max_w=label_w)
 
         if self.has_focus():
             _rounded_rect(cr, 2, 2, width - 4, height - 4, 10)
@@ -831,6 +935,25 @@ class MainWindow(Gtk.ApplicationWindow):
                 order.append(me)
         return order
 
+    def _display_cells(self, me: str, hidden: set) -> dict:
+        """The 2D arrangement to draw, as {name: (col, row)}, from the running
+        group's positions. Empty when the group has no 2D arrangement (a plain
+        row), so the caller falls back to the row view. Forgotten machines are
+        left out; this machine is always included."""
+        pos = (self._group or {}).get("pos") or {}
+        if not pos or me not in pos:
+            return {}
+        cells = {}
+        for name, p in pos.items():
+            name = str(name)
+            if name in hidden:
+                continue
+            try:
+                cells[name] = (int(p["c"]), int(p["r"]))
+            except (KeyError, TypeError, ValueError):
+                return {}
+        return cells if me in cells else {}
+
     def _sync_arrangement(self, v: dict):
         a = self.arrangement
         me = self._me_name(v)
@@ -866,7 +989,11 @@ class MainWindow(Gtk.ApplicationWindow):
                 if not m.get("online"):
                     a.offline.add(name)
             a.location = str((self._group or {}).get("location") or "")
-            a.set_order(self._display_layout(me), me)
+            cells = self._display_cells(me, hidden)
+            if cells:
+                a.set_grid(cells, me)
+            else:
+                a.set_order(self._display_layout(me), me)
         a.refresh()
         self._refresh_forget_row()
         self._update_arrangement_hint()
@@ -897,6 +1024,11 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _update_arrangement_hint(self):
         a = self.arrangement
+        if a._is_grid():
+            self.arrangement_hint.set_text(
+                "The screens as they sit on your desk. The pointer crosses where screens touch — "
+                "side to side and top to bottom. Click a screen to select it; offline computers are skipped.")
+            return
         if len(a.order) > 2:
             self.arrangement_hint.set_text(
                 "The screens from left to right, as they stand on your desk. Drag a screen to move it; "
@@ -1267,7 +1399,7 @@ class MainWindow(Gtk.ApplicationWindow):
         ph = int(st.get("peer_screen_height") or 0) if connected and st else 0
         group = None
         if st and st.get("group"):
-            group = {k: st.get(k) for k in ("layout", "members", "location")}
+            group = {k: st.get(k) for k in ("layout", "members", "location", "pos")}
             online = [m for m in (st.get("members") or []) if m.get("online")]
             if len(online) == 1 and online[0].get("width") and online[0].get("height"):
                 pw, ph = int(online[0]["width"]), int(online[0]["height"])
