@@ -61,6 +61,9 @@ func TestCursorAtRoundTrip(t *testing.T) {
 		{Epoch: 7, Target: NameHash("desk"), Side: "left", Y: 30000},
 		{Epoch: 1 << 31, Target: NameHash("laptop"), Side: "right", Y: 0},
 		{Epoch: 3, Target: NameHash("x"), Side: "", Y: 65535},
+		// Up and down carry a horizontal offset in the same field.
+		{Epoch: 9, Target: NameHash("top"), Side: "up", Y: 12345},
+		{Epoch: 11, Target: NameHash("bottom"), Side: "down", Y: 54321},
 	} {
 		back, err := UnmarshalPacket(NewCursorPacket(1, 2, in).Marshal())
 		if err != nil {

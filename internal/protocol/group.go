@@ -91,9 +91,10 @@ func (a *GroupAssembler) Add(p *Packet) (doc []byte, done bool) {
 // CursorAt says the shared cursor moved to the machine whose name hashes to
 // Target. Epoch orders announcements: everyone follows the highest one, so a
 // late message from a machine that lost the cursor changes nothing. Side is
-// the side of the target's screen the cursor enters from ("left", "right", or
-// "" when it was taken back without crossing an edge), and Y its height there
-// in MWB's 0-65535 space.
+// the side of the target's screen the cursor enters from ("left", "right",
+// "up", "down", or "" when it was taken back without crossing an edge). Y is
+// the cursor's position along that edge in MWB's 0-65535 space: its height on a
+// left or right edge, its horizontal offset on an up or down (top/bottom) edge.
 type CursorAt struct {
 	Epoch  uint32
 	Target uint32
@@ -120,6 +121,10 @@ func NewCursorPacket(src, des uint32, c CursorAt) *Packet {
 		side = 1
 	case "right":
 		side = 2
+	case "up":
+		side = 3
+	case "down":
+		side = 4
 	}
 	p.Mouse = MouseData{
 		X:          int32(c.Epoch),
@@ -142,6 +147,10 @@ func (p *Packet) CursorAt() (c CursorAt, ok bool) {
 		c.Side = "left"
 	case 2:
 		c.Side = "right"
+	case 3:
+		c.Side = "up"
+	case 4:
+		c.Side = "down"
 	}
 	return c, true
 }
