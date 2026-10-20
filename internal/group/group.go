@@ -566,6 +566,29 @@ func (g *Group) onlineConns() []*network.Conn {
 // Conns returns the connections to every member online now.
 func (g *Group) Conns() []*network.Conn { return g.onlineConns() }
 
+// FileCopyTargets returns the connections a copied file should be sent to: the
+// single machine the cursor is on, when that is a remote machine online now,
+// otherwise every machine online. So a large file travels once, to where the
+// pointer is, instead of to the whole group; but a copy made with the pointer
+// at home (or its place unknown) still reaches everyone, matching how clipboard
+// text and images are always broadcast.
+func (g *Group) FileCopyTargets() []*network.Conn {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.loc != "" && g.loc != g.o.Name {
+		if l := g.links[g.loc]; l != nil && l.conn != nil {
+			return []*network.Conn{l.conn}
+		}
+	}
+	var out []*network.Conn
+	for _, l := range g.links {
+		if l.conn != nil {
+			out = append(out, l.conn)
+		}
+	}
+	return out
+}
+
 // applyInfo takes a member's group document.
 func (g *Group) applyInfo(from *link, doc []byte) {
 	in, theirs, err := decodeInfo(doc, time.Now())
@@ -593,15 +616,19 @@ func (g *Group) applyInfo(from *link, doc []byte) {
 		if name == me {
 			continue
 		}
+		if l := g.links[name]; l != nil && l.conn != nil {
+			// Connected right now: the machine is plainly present, so a
+			// tombstone from a peer that has not yet seen it reconnect does not
+			// drop it. Presence beats a stale forget, exactly as a reconnection
+			// lifts this machine's own tombstone (see session). Without this a
+			// peer's old tombstone would re-forget a machine that just rejoined,
+			// flapping it in and out of the group.
+			continue
+		}
 		if cur, ok := g.forgotten[name]; !ok || at > cur {
 			g.forgotten[name] = at
 			forgetChanged = true
-			if l := g.links[name]; l != nil {
-				if l.conn != nil {
-					_ = l.conn.Close()
-				}
-				delete(g.links, name)
-			}
+			delete(g.links, name) // offline here: no live connection to close
 		}
 	}
 	if forgetChanged {

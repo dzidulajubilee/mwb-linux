@@ -87,6 +87,25 @@ class StatusFileTests(unittest.TestCase):
         with open(path) as f:
             self.assertEqual(sorted(json.load(f)), ["mystogan", "tv"])
 
+    def test_client_version_parses_and_caches(self):
+        import subprocess as sp
+        calls = []
+
+        def fake_run(args, **kw):
+            calls.append(args)
+            return sp.CompletedProcess(args, 0, stdout="mwb 0.6.4-linuxpeer.24\n", stderr="")
+
+        service._client_version = None
+        orig = service.subprocess.run
+        service.subprocess.run = fake_run
+        try:
+            self.assertEqual(service.client_version(), "0.6.4-linuxpeer.24")
+            self.assertEqual(service.client_version(), "0.6.4-linuxpeer.24")  # cached
+            self.assertEqual(len(calls), 1, "version should be read once and cached")
+        finally:
+            service.subprocess.run = orig
+            service._client_version = None
+
     def test_forgotten_names_reads_both_files(self):
         d = tempfile.mkdtemp()
         self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))

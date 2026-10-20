@@ -648,6 +648,12 @@ class MainWindow(Gtk.ApplicationWindow):
         bar = Gtk.Box(spacing=8)
         for side in ("start", "end", "top", "bottom"):
             getattr(bar, f"set_margin_{side}")(12)
+        # The running (or installed) client version, pinned to the far left of
+        # the footer, beside the save message and the Revert/Save buttons.
+        self.version_label = Gtk.Label(xalign=0)
+        self.version_label.add_css_class("dim-label")
+        self.version_label.set_tooltip_text("Installed mwb version")
+        bar.append(self.version_label)
         self.save_msg = Gtk.Label(xalign=0, hexpand=True, wrap=True)
         self.save_msg.add_css_class("dim-label")
         bar.append(self.save_msg)
@@ -792,8 +798,12 @@ class MainWindow(Gtk.ApplicationWindow):
         """Machines that must never appear in the arrangement or be saved: the
         tombstones the client holds, plus any just forgotten here and not yet
         written. Reading the store makes this survive a stale config, a save or
-        a Start/Stop — the forgotten machine stays gone."""
-        return self._forgetting | service.forgotten_names()
+        a Start/Stop — the forgotten machine stays gone. A machine the group
+        reports online now is never hidden, so a live machine always shows even
+        if a stale tombstone lingers while the group converges."""
+        hidden = self._forgetting | service.forgotten_names()
+        online = {str(m.get("name") or "") for m in (self._group or {}).get("members") or [] if m.get("online")}
+        return hidden - online
 
     def _display_layout(self, me: str) -> list[str]:
         """The screen order to show for a Linux computer: the user's edit, the
@@ -1183,6 +1193,10 @@ class MainWindow(Gtk.ApplicationWindow):
     def _show_status(self, unit: service.UnitState, st: dict | None, problem=None):
         self._poll_busy = False
         self._unit = unit
+        # The running client reports its own version; fall back to the installed
+        # binary when it is stopped.
+        ver = (str(st.get("version")) if st and st.get("version") else "") or service.client_version()
+        self.version_label.set_text(f"mwb {ver}" if ver else "")
         connected = False
         state = str(st.get("state") or "") if st else ""
         self._waiting_for_settings = state in ("not_configured", "config_error")

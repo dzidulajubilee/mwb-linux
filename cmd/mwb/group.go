@@ -178,8 +178,14 @@ func runGroup(gs groupSetup, stop <-chan struct{}) {
 		clipMgr = clipboard.NewGroupManager(g.Conns, capture.DetectDisplay())
 		if cfg.FileTransferEnabled() {
 			clipMgr.OnFileCopy = func(paths []string) {
-				// A copied file goes to every member online now.
-				for _, conn := range g.Conns() {
+				// A copied file goes to the machine the pointer is on, if that
+				// is where it is; otherwise to every machine online. Clipboard
+				// text and images are small and still broadcast (inside the
+				// clipboard manager); only the larger file transfer is steered,
+				// so it does not travel to every machine at once.
+				targets := g.FileCopyTargets()
+				slog.Info("sending copied file(s)", "files", len(paths), "to", len(targets))
+				for _, conn := range targets {
 					sender := network.FileSender{
 						Addr:        net.JoinHostPort(conn.RemoteHost(), strconv.Itoa(cfg.ClipboardPort())),
 						SecurityKey: cfg.Key,

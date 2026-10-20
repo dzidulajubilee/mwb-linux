@@ -335,6 +335,29 @@ def state_dir() -> str:
     return os.path.join(base, "mwb")
 
 
+_client_version: str | None = None
+
+
+def client_version() -> str:
+    """The installed client's version, e.g. "0.6.4-linuxpeer.24", from
+    `mwb -version`. Cached: the binary does not change while the GUI runs. The
+    status file's own version field is preferred when the client is running, so
+    this is the fallback for when it is stopped. "" if it cannot be read."""
+    global _client_version
+    if _client_version is None:
+        _client_version = ""
+        exe = shutil.which("mwb") or "/usr/local/bin/mwb"
+        try:
+            r = subprocess.run([exe, "-version"], capture_output=True, text=True,
+                               timeout=_TIMEOUT, check=False)
+            out = (r.stdout or "").strip()
+            if out:
+                _client_version = out.split()[-1]  # "mwb 0.6.4-..." -> "0.6.4-..."
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            pass
+    return _client_version
+
+
 def forgotten_names(directory: str | None = None) -> set:
     """Machines the client has been told to forget: the tombstones it has
     recorded (forgotten.json) plus any request not yet consumed

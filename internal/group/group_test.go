@@ -113,6 +113,38 @@ func TestSnapshotReportsWhichMachineSetTheLayout(t *testing.T) {
 	}
 }
 
+func TestFileCopyTargetsHybrid(t *testing.T) {
+	g := New(Options{Name: "me"})
+	a := g.newLinkLocked("a")
+	a.conn = &network.Conn{}
+	b := g.newLinkLocked("b")
+	b.conn = &network.Conn{}
+	g.newLinkLocked("c") // offline: no conn
+
+	// Pointer at home, or its place unknown: broadcast to every machine online
+	// (a and b), never the offline c.
+	for _, loc := range []string{"", "me"} {
+		g.loc = loc
+		if got := g.FileCopyTargets(); len(got) != 2 {
+			t.Fatalf("loc=%q: file copy sent to %d machines, want 2 (broadcast)", loc, len(got))
+		}
+	}
+
+	// Pointer on a remote machine online: the file goes to just that one.
+	g.loc = "a"
+	got := g.FileCopyTargets()
+	if len(got) != 1 || got[0] != a.conn {
+		t.Fatalf("loc=a: targets=%v, want only a's connection", got)
+	}
+
+	// Pointer on an offline machine: fall back to broadcast, do not drop the
+	// copy on the floor.
+	g.loc = "c"
+	if got := g.FileCopyTargets(); len(got) != 2 {
+		t.Fatalf("loc=c (offline): sent to %d, want 2 (broadcast fallback)", len(got))
+	}
+}
+
 func TestForgetRemovesMachineAndTombstonesIt(t *testing.T) {
 	g := New(Options{Name: "me", Layout: Layout{Order: []string{"me", "gone", "keep"}, Changed: 5, By: "me"}})
 	g.newLinkLocked("gone")
@@ -206,6 +238,38 @@ func TestGossipCannotResurrectAForgottenMachine(t *testing.T) {
 	}
 	if slices.Contains(g.Snapshot().Layout, "gone") {
 		t.Fatalf("hearsay put the forgotten machine back in the layout: %v", g.Snapshot().Layout)
+	}
+}
+
+func TestAStaleTombstoneCannotDropAReconnectedMachine(t *testing.T) {
+	// mystogan was forgotten, then powered back on and reconnected here, which
+	// lifted its tombstone locally. A peer that still holds the old tombstone
+	// gossips it. Because mystogan is connected now, it must not be dropped:
+	// presence beats a stale forget, so it does not flap out of the group.
+	g := New(Options{Name: "me", Layout: Layout{Order: []string{"peer", "me", "mystogan"}}})
+	peer := g.newLinkLocked("peer")
+	myst := g.newLinkLocked("mystogan")
+	myst.conn = &network.Conn{} // reconnected: live here
+
+	// An empty layout (not newer) so applyInfo makes no layout change and does
+	// not broadcast: this test exercises only the tombstone decision, and the
+	// fake connection cannot carry a real packet.
+	doc, err := encodeInfo(
+		Layout{}, nil, map[string]int64{"mystogan": time.Now().Unix()},
+		1600, 900, true, 0, 0, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.applyInfo(peer, doc)
+
+	if _, ok := g.links["mystogan"]; !ok {
+		t.Fatal("a stale tombstone dropped a machine that is connected now")
+	}
+	if g.isForgotten("mystogan") {
+		t.Fatal("a stale tombstone re-forgot a connected machine")
+	}
+	if !slices.Contains(g.Snapshot().Layout, "mystogan") {
+		t.Fatalf("connected machine fell out of the layout: %v", g.Snapshot().Layout)
 	}
 }
 

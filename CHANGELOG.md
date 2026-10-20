@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- **A copied file follows the pointer.** In a group of three or more, a copied
+  file is now sent to the one machine the pointer is on, instead of to every
+  machine at once — so a large file travels across the network once, not once
+  per machine. When the pointer is on this machine, or its place is unknown,
+  the file still goes to everyone, as before. Clipboard text and images are
+  small and are still shared with the whole group.
+
 ### Added
 - **Forget** a computer in a group: click a screen in the arrangement to
   select it, and a Forget button removes that computer from the group on every
