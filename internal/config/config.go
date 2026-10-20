@@ -29,6 +29,10 @@ type Config struct {
 	// wins, and LayoutChanged (Unix seconds, 0 = unknown) is when it was made.
 	Layout        []string `toml:"layout"`
 	LayoutChanged int64    `toml:"layout_changed"`
+	// Grid is the two-dimensional arrangement, each entry "name:col:row". Empty
+	// means the arrangement is the single row in Layout. Layout is always kept
+	// as the row projection, so an older build still reads a sensible order.
+	Grid []string `toml:"grid"`
 
 	// Interface names the network interface mwb uses, such as "wlp4s0":
 	// it listens only on that interface's address and connects out from it.

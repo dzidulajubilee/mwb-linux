@@ -1,6 +1,11 @@
 package group
 
-import "sort"
+import (
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
+)
 
 // This file is the groundwork for arranging screens in two dimensions (a
 // machine above or below another, not only left and right). It is a pure model
@@ -114,6 +119,45 @@ func BeyondGrid(grid map[string]Pos, online func(string) bool, name, side string
 		}
 		cell = Pos{Col: cell.Col + d.Col, Row: cell.Row + d.Row}
 	}
+}
+
+// FormatGrid renders positions as "name:col:row" strings, sorted so the saved
+// form is stable. It is the inverse of ParseGrid.
+func FormatGrid(pos map[string]Pos) []string {
+	if len(pos) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(pos))
+	for n, p := range pos {
+		out = append(out, fmt.Sprintf("%s:%d:%d", n, p.Col, p.Row))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ParseGrid reads positions written as "name:col:row". Entries that are not in
+// that form, name something that is not a valid machine, or fall outside the
+// arrangement bounds are dropped. Returns nil for an empty or all-bad input.
+func ParseGrid(entries []string) map[string]Pos {
+	out := map[string]Pos{}
+	for _, e := range entries {
+		parts := strings.Split(e, ":")
+		if len(parts) != 3 || !validName(parts[0]) {
+			continue
+		}
+		col, err1 := strconv.Atoi(parts[1])
+		row, err2 := strconv.Atoi(parts[2])
+		if err1 != nil || err2 != nil || col < 0 || row < 0 || col >= MaxMachines || row >= MaxMachines {
+			continue
+		}
+		if len(out) < MaxMachines {
+			out[parts[0]] = Pos{Col: col, Row: row}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // GridOrderRows returns the machines grouped into rows, each row left to right,

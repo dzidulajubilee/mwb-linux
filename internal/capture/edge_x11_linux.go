@@ -13,7 +13,8 @@ import (
 
 // edgeSource reports when the pointer touches the shared screen edge.
 type edgeSource interface {
-	Hits() <-chan int32 // Y coordinate of each edge touch
+	Hits() <-chan int32 // coordinate along the edge of each touch (Y for a
+	// left/right edge, X for a top/bottom edge)
 	Raise()
 	Close()
 }
@@ -32,10 +33,11 @@ func isWaylandSession() bool {
 // XWayland does not send LeaveNotify when the cursor moves onto a Wayland
 // surface, so only arrival is reported; re-arming is done from evdev motion.
 type edgeStrip struct {
-	conn *xgb.Conn
-	win  xproto.Window
-	hits chan int32
-	done chan struct{} // closed when readEvents returns
+	conn    *xgb.Conn
+	win     xproto.Window
+	hits    chan int32
+	reportX bool          // report RootX (top/bottom edge) rather than RootY
+	done    chan struct{} // closed when readEvents returns
 }
 
 func newEdgeStrip(display, side string) (*edgeStrip, error) {
@@ -76,15 +78,29 @@ func newEdgeStrip(display, side string) (*edgeStrip, error) {
 		return nil, fmt.Errorf("create colormap: %w", err)
 	}
 
-	x := int16(0)
-	if side == "right" {
-		x = int16(scr.WidthInPixels) - 1
+	// A left/right edge is a one-pixel-wide strip the full height of the screen;
+	// a top/bottom edge is a one-pixel-tall strip the full width. The strip
+	// reports the coordinate along itself: Y for left/right, X for top/bottom.
+	var x, y int16
+	var w, h uint16
+	reportX := false
+	switch side {
+	case "left":
+		x, y, w, h = 0, 0, 1, scr.HeightInPixels
+	case "right":
+		x, y, w, h = int16(scr.WidthInPixels)-1, 0, 1, scr.HeightInPixels
+	case "up":
+		x, y, w, h, reportX = 0, 0, scr.WidthInPixels, 1, true
+	case "down":
+		x, y, w, h, reportX = 0, int16(scr.HeightInPixels)-1, scr.WidthInPixels, 1, true
+	default:
+		return nil, fmt.Errorf("unknown edge side %q", side)
 	}
 	win, err := xproto.NewWindowId(conn)
 	if err != nil {
 		return nil, err
 	}
-	err = xproto.CreateWindowChecked(conn, 32, win, scr.Root, x, 0, 1, scr.HeightInPixels, 0,
+	err = xproto.CreateWindowChecked(conn, 32, win, scr.Root, x, y, w, h, 0,
 		xproto.WindowClassInputOutput, visual,
 		xproto.CwBackPixel|xproto.CwBorderPixel|xproto.CwOverrideRedirect|xproto.CwEventMask|xproto.CwColormap,
 		[]uint32{0, 0, 1, xproto.EventMaskEnterWindow | xproto.EventMaskPointerMotion, uint32(cmap)}).Check()
@@ -95,7 +111,7 @@ func newEdgeStrip(display, side string) (*edgeStrip, error) {
 		return nil, fmt.Errorf("map edge window: %w", err)
 	}
 
-	s := &edgeStrip{conn: conn, win: win, hits: make(chan int32, 1), done: make(chan struct{})}
+	s := &edgeStrip{conn: conn, win: win, hits: make(chan int32, 1), reportX: reportX, done: make(chan struct{})}
 	go s.readEvents()
 	ok = true
 	return s, nil
@@ -109,12 +125,20 @@ func (s *edgeStrip) readEvents() {
 		if ev == nil && xerr == nil {
 			return // connection closed
 		}
-		var y int32
+		var along int32
 		switch e := ev.(type) {
 		case xproto.EnterNotifyEvent:
-			y = int32(e.RootY)
+			if s.reportX {
+				along = int32(e.RootX)
+			} else {
+				along = int32(e.RootY)
+			}
 		case xproto.MotionNotifyEvent:
-			y = int32(e.RootY)
+			if s.reportX {
+				along = int32(e.RootX)
+			} else {
+				along = int32(e.RootY)
+			}
 		default:
 			continue
 		}
@@ -123,7 +147,7 @@ func (s *edgeStrip) readEvents() {
 		case <-s.hits:
 		default:
 		}
-		s.hits <- y
+		s.hits <- along
 	}
 }
 

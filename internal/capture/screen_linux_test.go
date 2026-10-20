@@ -30,7 +30,7 @@ func TestGroupEdgeWindowsRearmFromMotion(t *testing.T) {
 	c, _ := newGroupCapturer(t, row)
 	c.edges = map[string]edgeSource{"left": &fakeEdge{hits: make(chan int32)}}
 	c.canSwitch, c.edgeSide = false, ""
-	c.trackInward(rearmDistance)
+	c.trackInward(rearmDistance, 0)
 	if !c.canSwitch {
 		t.Fatal("group edge windows never re-armed")
 	}

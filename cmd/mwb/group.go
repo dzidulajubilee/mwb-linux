@@ -91,7 +91,7 @@ func runGroup(gs groupSetup, stop <-chan struct{}) {
 		Key:        cfg.Key,
 		Port:       cfg.MessagePort(),
 		Bootstrap:  cfg.Host,
-		Layout:     group.Layout{Order: cfg.Layout, Changed: cfg.LayoutChanged},
+		Layout:     group.Layout{Order: cfg.Layout, Pos: group.ParseGrid(cfg.Grid), Changed: cfg.LayoutChanged},
 		LegacyEdge: legacyEdge,
 		StorePath:  group.StorePath(),
 		Screen:     screen,
@@ -127,7 +127,7 @@ func runGroup(gs groupSetup, stop <-chan struct{}) {
 	}
 	if gs.saveLayout {
 		opts.SaveLayout = func(l group.Layout) error {
-			return config.SaveLayout(gs.configPath, l.Order, l.Changed)
+			return config.SaveLayout(gs.configPath, l.Order, group.FormatGrid(l.Pos), l.Changed)
 		}
 	}
 	if gs.sharing {

@@ -518,7 +518,7 @@ func (c *Capturer) Run() error {
 	}
 	if c.nav != nil && c.edges == nil && isWaylandSession() {
 		c.edges = map[string]edgeSource{}
-		for side, watch := range map[string]bool{"left": c.watchLeft, "right": c.watchRight} {
+		for side, watch := range map[string]bool{"left": c.watchLeft, "right": c.watchRight, "up": c.watchUp, "down": c.watchDown} {
 			if !watch {
 				continue
 			}
@@ -534,7 +534,8 @@ func (c *Capturer) Run() error {
 		c.canSwitch = false
 		c.inward = 0
 		c.mu.Unlock()
-		slog.Info("Wayland session: detecting the screen edges with XWayland edge windows", "left", c.watchLeft, "right", c.watchRight)
+		slog.Info("Wayland session: detecting the screen edges with XWayland edge windows",
+			"left", c.watchLeft, "right", c.watchRight, "up", c.watchUp, "down", c.watchDown)
 	} else if c.nav == nil && c.edge == nil && isWaylandSession() {
 		strip, err := newEdgeStrip(getDisplay(), c.edgeSide)
 		if err != nil {
@@ -741,7 +742,7 @@ func (c *Capturer) pollCursorEdge() {
 
 	// Edge windows report touches on Wayland: one for the pair's edge, or
 	// one per watched side in a group.
-	var hitsLeft, hitsRight <-chan int32
+	var hitsLeft, hitsRight, hitsUp, hitsDown <-chan int32
 	if c.edge != nil {
 		if c.edgeSide == "right" {
 			hitsRight = c.edge.Hits()
@@ -755,18 +756,33 @@ func (c *Capturer) pollCursorEdge() {
 	if e := c.edges["right"]; e != nil {
 		hitsRight = e.Hits()
 	}
+	if e := c.edges["up"]; e != nil {
+		hitsUp = e.Hits()
+	}
+	if e := c.edges["down"]; e != nil {
+		hitsDown = e.Hits()
+	}
 	windows := c.edge != nil || len(c.edges) > 0
 
-	hit := func(side string, y int32) {
+	// hit fires when an edge window reports a touch. along is the coordinate
+	// the window reports along itself: Y for a left/right edge, X for up/down.
+	hit := func(side string, along int32) {
 		c.mu.Lock()
 		armed := c.active && c.canSwitch
 		c.mu.Unlock()
 		if !armed {
 			return
 		}
-		x := int32(0)
-		if side == "right" {
-			x = c.screen.Width - 1
+		var x, y int32
+		switch side {
+		case "left":
+			x, y = 0, along
+		case "right":
+			x, y = c.screen.Width-1, along
+		case "up":
+			x, y = along, 0
+		case "down":
+			x, y = along, c.screen.Height-1
 		}
 		c.crossLocalEdge(side, x, y)
 	}
@@ -789,6 +805,18 @@ func (c *Capturer) pollCursorEdge() {
 				continue
 			}
 			hit("right", y)
+		case x, ok := <-hitsUp:
+			if !ok {
+				hitsUp = nil
+				continue
+			}
+			hit("up", x)
+		case x, ok := <-hitsDown:
+			if !ok {
+				hitsDown = nil
+				continue
+			}
+			hit("down", x)
 		case <-ticker.C:
 			if windows {
 				// Re-raise about once a second so newly mapped windows
@@ -817,7 +845,7 @@ func (c *Capturer) pollCursorEdge() {
 			if errCount > 0 {
 				errCount = 0
 			}
-			if side := c.polledEdge(x); side != "" {
+			if side := c.polledEdge(x, y); side != "" {
 				c.crossLocalEdge(side, x, y)
 			}
 		}
@@ -827,14 +855,18 @@ func (c *Capturer) pollCursorEdge() {
 // polledEdge tracks whether the cursor has been away from the edge since
 // activation (so it cannot loop straight back), and returns the side it is
 // touching once armed, or "".
-func (c *Capturer) polledEdge(x int32) string {
+func (c *Capturer) polledEdge(x, y int32) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	edgeZone := int32(rearmDistance) // pixels from edge — must move this far inward to re-arm
 	left, right := c.edgeSide == "left", c.edgeSide == "right"
+	up, down := false, false
 	if c.nav != nil {
-		left, right = c.watchLeft, c.watchRight
-		if x > edgeZone && x < c.screen.Width-edgeZone {
+		left, right, up, down = c.watchLeft, c.watchRight, c.watchUp, c.watchDown
+		// Re-arm once the cursor sits clear of every watched edge.
+		awayX := x > edgeZone && x < c.screen.Width-edgeZone
+		awayY := y > edgeZone && y < c.screen.Height-edgeZone
+		if awayX && awayY {
 			c.canSwitch = true
 		}
 	} else {
@@ -854,6 +886,12 @@ func (c *Capturer) polledEdge(x int32) string {
 	if right && x >= c.screen.Width-1 {
 		return "right"
 	}
+	if up && y <= 1 {
+		return "up"
+	}
+	if down && y >= c.screen.Height-1 {
+		return "down"
+	}
 	return ""
 }
 
@@ -868,20 +906,28 @@ func (c *Capturer) crossLocalEdge(side string, x, y int32) {
 
 // trackInward re-arms the edge on Wayland once the physical pointer has moved
 // rearmDistance raw units away from the edge since the last disarm.
-func (c *Capturer) trackInward(dx int32) {
+func (c *Capturer) trackInward(dx, dy int32) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if (c.edge == nil && len(c.edges) == 0) || c.canSwitch {
 		return // edge windows are only used on Wayland; X11 polling re-arms itself
 	}
+	// Count motion away from the edge the cursor last entered through: inward is
+	// along X for a left/right edge, along Y for an up/down one.
+	var inward int32
 	switch c.edgeSide {
 	case "right":
-		dx = -dx
+		inward = -dx
 	case "left":
+		inward = dx
+	case "down":
+		inward = -dy
+	case "up":
+		inward = dy
 	default:
-		dx = abs32(dx) // no known edge yet: any motion moves away from one
+		inward = abs32(dx) + abs32(dy) // no known edge yet: any motion moves away
 	}
-	c.inward = max(0, c.inward+dx)
+	c.inward = max(0, c.inward+inward)
 	if c.inward >= rearmDistance {
 		c.canSwitch = true
 		c.inward = 0
@@ -1224,7 +1270,9 @@ func parseEvent(buf []byte) inputEvent {
 func (c *Capturer) handleEvent(ev inputEvent) {
 	if c.IsActive() {
 		if ev.Type == evRel && ev.Code == relX {
-			c.trackInward(ev.Value)
+			c.trackInward(ev.Value, 0)
+		} else if ev.Type == evRel && ev.Code == relY {
+			c.trackInward(0, ev.Value)
 		}
 		return
 	}

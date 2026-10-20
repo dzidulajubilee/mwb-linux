@@ -103,6 +103,26 @@ func TestBeyondGridSkipsOfflineAndStopsAtGaps(t *testing.T) {
 	}
 }
 
+func TestParseAndFormatGrid(t *testing.T) {
+	pos := map[string]Pos{"a": {0, 0}, "b": {1, 0}, "c": {1, 1}}
+	got := ParseGrid(FormatGrid(pos))
+	if !reflect.DeepEqual(got, pos) {
+		t.Fatalf("round-trip changed positions: %v", got)
+	}
+	// FormatGrid is stable (sorted).
+	if f := FormatGrid(pos); !reflect.DeepEqual(f, []string{"a:0:0", "b:1:0", "c:1:1"}) {
+		t.Fatalf("FormatGrid = %v", f)
+	}
+	// Bad entries are dropped; empty input gives nil.
+	if ParseGrid(nil) != nil || FormatGrid(nil) != nil {
+		t.Fatal("empty input should give nil")
+	}
+	bad := ParseGrid([]string{"a:0:0", "nope", "b:x:0", "c:9:9", ":1:1", "d:1:1"})
+	if !reflect.DeepEqual(bad, map[string]Pos{"a": {0, 0}, "d": {1, 1}}) {
+		t.Fatalf("bad entries not dropped: %v", bad)
+	}
+}
+
 func TestGridOrderRows(t *testing.T) {
 	grid := map[string]Pos{
 		"b1": {1, 1}, "a1": {0, 1}, "a0": {0, 0}, "b0": {1, 0},

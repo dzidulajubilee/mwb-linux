@@ -112,7 +112,7 @@ func TestGroupCursorWalksTheRowAndComesBack(t *testing.T) {
 	if c.watchLeft || !c.watchRight {
 		t.Fatal("the leftmost screen watches only its right edge")
 	}
-	if side := c.polledEdge(0); side != "" {
+	if side := c.polledEdge(0, 540); side != "" {
 		t.Fatalf("the left edge has no neighbour but reported %q", side)
 	}
 
@@ -180,6 +180,21 @@ func TestGroupCursorWalksUpAndDown(t *testing.T) {
 	}
 	if p := c.pointer.(*recordingPointer); !p.moved || p.y < c.screen.Height-200 {
 		t.Fatalf("landed at y=%d, want near the bottom edge it came in from (b is below me)", p.y)
+	}
+}
+
+func TestPolledEdgeDetectsTopAndBottom(t *testing.T) {
+	// me on top with b below: only the bottom edge has a neighbour.
+	row := newFakeGrid("me", map[string]group.Pos{"me": {Col: 0, Row: 0}, "b": {Col: 0, Row: 1}})
+	c, _ := newGroupCapturer(t, row) // 1920x1080, canSwitch=true
+	if side := c.polledEdge(960, c.screen.Height-1); side != "down" {
+		t.Fatalf("bottom edge with a neighbour below reported %q, want down", side)
+	}
+	if side := c.polledEdge(960, 0); side != "" {
+		t.Fatalf("top edge has no neighbour but reported %q", side)
+	}
+	if side := c.polledEdge(0, 540); side != "" {
+		t.Fatalf("left edge has no neighbour but reported %q", side)
 	}
 }
 

@@ -316,7 +316,7 @@ func (s touchpadSink) remote() bool {
 func (s touchpadSink) touchpadMove(dx, dy int32) {
 	c := s.c
 	if c.IsActive() {
-		c.trackInward(dx)
+		c.trackInward(dx, dy)
 		return
 	}
 	if !s.remote() {
