@@ -37,6 +37,7 @@ MANAGED: dict[str, type] = {
     "edge_changed": int,  # when edge was chosen, Unix seconds; mwb keeps two peers' sides mirrored
     "layout": list,  # Linux groups: machine names left to right; mwb keeps it in step across the group
     "layout_changed": int,  # when layout was chosen, Unix seconds
+    "grid": list,  # 2D arrangement, each "name:col:row"; empty = the plain row in layout
     "interface": str,  # network interface to use, e.g. "wlp4s0"; "" = all
     "bidirectional": bool,
     "clipboard": bool,
@@ -54,6 +55,7 @@ DEFAULTS: dict[str, object] = {
     "edge_changed": 0,
     "layout": [],
     "layout_changed": 0,
+    "grid": [],
     "interface": "",
     "bidirectional": False,
     "clipboard": True,
@@ -449,11 +451,34 @@ def validate(values: dict[str, object]) -> dict[str, str]:
     if not isinstance(layout, list) or len(layout) > GROUP_MAX or len(set(layout)) != len(layout) \
             or any(not isinstance(n, str) or not n or len(n.encode("utf-8")) > NAME_MAX for n in layout):
         problems["layout"] = f"The screen order needs up to {GROUP_MAX} different computer names."
+    grid = values.get("grid") or []
+    if not isinstance(grid, list) or len(grid) > GROUP_MAX or not _grid_ok(grid):
+        problems["grid"] = f"The arrangement needs up to {GROUP_MAX} computers, each as name:col:row."
     for k in ("remote_width", "remote_height"):
         v = values.get(k)
         if not isinstance(v, int) or isinstance(v, bool) or not 200 <= v <= 16384:
             problems[k] = "Enter a screen size between 200 and 16384 pixels."
     return problems
+
+
+def _grid_ok(grid: list) -> bool:
+    """Whether every grid entry is a valid "name:col:row" with a real name and
+    non-negative bounds, and the names are distinct."""
+    names = []
+    for e in grid:
+        if not isinstance(e, str):
+            return False
+        parts = e.split(":")
+        if len(parts) != 3 or not parts[0] or len(parts[0].encode("utf-8")) > NAME_MAX:
+            return False
+        try:
+            c, r = int(parts[1]), int(parts[2])
+        except ValueError:
+            return False
+        if c < 0 or r < 0 or c >= GROUP_MAX or r >= GROUP_MAX:
+            return False
+        names.append(parts[0])
+    return len(set(names)) == len(names)
 
 
 def warnings(values: dict[str, object]) -> dict[str, str]:

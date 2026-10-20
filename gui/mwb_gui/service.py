@@ -415,6 +415,83 @@ def grid_rects(cells: dict, aspects: dict, width: float, height: float,
     return out
 
 
+def renormalize(cells: dict) -> dict:
+    """Snap positions back to consecutive integer columns and rows, removing any
+    gaps. Fractional values sort into place first, so a half-step insert becomes
+    a clean new column or row."""
+    if not cells:
+        return {}
+    cols = sorted({c for c, _ in cells.values()})
+    rows = sorted({r for _, r in cells.values()})
+    cmap = {c: i for i, c in enumerate(cols)}
+    rmap = {r: i for i, r in enumerate(rows)}
+    return {n: (cmap[c], rmap[r]) for n, (c, r) in cells.items()}
+
+
+def place_adjacent(cells: dict, name: str, target: str, side: str) -> dict:
+    """Move name next to target: a new column or row on the given side
+    ("left"/"right"/"up"/"down"), or swap the two when side is "center".
+    Returns a fresh {name: (col, row)}. A no-op drop returns the cells
+    unchanged."""
+    if name not in cells or target not in cells or (name == target and side != "center"):
+        return {n: (int(c), int(r)) for n, (c, r) in cells.items()}
+    out = {n: (float(c), float(r)) for n, (c, r) in cells.items()}
+    tc, tr = out[target]
+    if side == "center":
+        out[name], out[target] = out[target], out[name]
+    elif side == "left":
+        out[name] = (tc - 0.5, tr)
+    elif side == "right":
+        out[name] = (tc + 0.5, tr)
+    elif side == "up":
+        out[name] = (tc, tr - 0.5)
+    elif side == "down":
+        out[name] = (tc, tr + 0.5)
+    else:
+        return {n: (int(c), int(r)) for n, (c, r) in cells.items()}
+    return renormalize(out)
+
+
+def move_in_grid(cells: dict, name: str, side: str) -> dict:
+    """Move name one cell in a direction ("left"/"right"/"up"/"down"), swapping
+    with whatever is there, or opening a new column/row at the edge. Returns a
+    fresh {name: (col, row)}. For arrow-key arranging."""
+    out = {n: (int(c), int(r)) for n, (c, r) in cells.items()}
+    if name not in out:
+        return out
+    delta = {"left": (-1, 0), "right": (1, 0), "up": (0, -1), "down": (0, 1)}.get(side)
+    if delta is None:
+        return out
+    c, r = out[name]
+    tc, tr = c + delta[0], r + delta[1]
+    occupant = next((n for n, (cc, rr) in out.items() if (cc, rr) == (tc, tr) and n != name), None)
+    out[name] = (tc, tr)
+    if occupant is not None:
+        out[occupant] = (c, r)  # swap
+    return renormalize(out)
+
+
+def drop_target(rects: dict, x: float, y: float) -> tuple:
+    """Which screen a drop at (x, y) lands on and which side of it, as
+    (name, side): "center" to swap, or "left"/"right"/"up"/"down" to place
+    beside it. rects is {name: (x, y, w, h)}. (None, "") when there is nothing."""
+    if not rects:
+        return (None, "")
+
+    def center(r):
+        return (r[0] + r[2] / 2, r[1] + r[3] / 2)
+
+    name = min(rects, key=lambda n: (center(rects[n])[0] - x) ** 2 + (center(rects[n])[1] - y) ** 2)
+    rx, ry, rw, rh = rects[name]
+    dx, dy = x - (rx + rw / 2), y - (ry + rh / 2)
+    inside = rx <= x <= rx + rw and ry <= y <= ry + rh
+    if inside and abs(dx) <= rw * 0.3 and abs(dy) <= rh * 0.3:
+        return (name, "center")
+    if abs(dx) / max(1, rw) >= abs(dy) / max(1, rh):
+        return (name, "right" if dx > 0 else "left")
+    return (name, "down" if dy > 0 else "up")
+
+
 def forgettable(name: str, me: str, offline: set, running: bool, linux_group: bool) -> bool:
     """Whether a selected screen in the arrangement can be removed from the
     group. Only a real, named Linux computer other than this one; and while the

@@ -138,6 +138,50 @@ class StatusFileTests(unittest.TestCase):
         self.assertAlmostEqual(rects["a"][0], rects["c"][0], delta=1.0)
         self.assertLess(rects["a"][1], rects["c"][1])  # a above c
 
+    def test_place_adjacent_and_renormalize(self):
+        # A row a-b-c; drop c below a -> c starts a new row under a.
+        row = {"a": (0, 0), "b": (1, 0), "c": (2, 0)}
+        got = service.place_adjacent(row, "c", "a", "down")
+        self.assertEqual(got, {"a": (0, 0), "b": (1, 0), "c": (0, 1)})
+        # Swap a and c.
+        self.assertEqual(service.place_adjacent(row, "a", "c", "center"),
+                         {"a": (2, 0), "b": (1, 0), "c": (0, 0)})
+        # Insert c to the left of a -> new leftmost column.
+        got = service.place_adjacent(row, "c", "a", "left")
+        self.assertEqual(got["c"], (0, 0))
+        self.assertEqual(got["a"], (1, 0))
+        self.assertEqual(got["b"], (2, 0))
+        # A column; drop bottom beside top -> becomes a 2-wide row (shape change).
+        col = {"a": (0, 0), "b": (0, 1)}
+        self.assertEqual(service.place_adjacent(col, "b", "a", "right"),
+                         {"a": (0, 0), "b": (1, 0)})
+        # No-op / bad side returns integer cells unchanged.
+        self.assertEqual(service.place_adjacent(row, "a", "a", "left"), row)
+
+    def test_move_in_grid(self):
+        # A row a-b-c; move b down -> b drops to the row below, under its column.
+        row = {"a": (0, 0), "b": (1, 0), "c": (2, 0)}
+        got = service.move_in_grid(row, "b", "down")
+        self.assertEqual(got, {"a": (0, 0), "b": (1, 1), "c": (2, 0)})
+        # Move a right -> swaps with b.
+        self.assertEqual(service.move_in_grid(row, "a", "right"),
+                         {"a": (1, 0), "b": (0, 0), "c": (2, 0)})
+        # Move leftmost further left -> opens a new leftmost column (compacted).
+        self.assertEqual(service.move_in_grid(row, "a", "left"), row)  # a already at 0 -> no net change
+        # In a column, move top up -> new top row (no-op after compaction here).
+        col = {"a": (0, 0), "b": (0, 1)}
+        self.assertEqual(service.move_in_grid(col, "b", "up"),
+                         {"a": (0, 1), "b": (0, 0)})  # swap
+        self.assertEqual(service.move_in_grid(row, "a", "nowhere"), row)
+
+    def test_drop_target(self):
+        rects = {"a": (0, 0, 100, 100), "b": (200, 0, 100, 100)}
+        self.assertEqual(service.drop_target(rects, 50, 50), ("a", "center"))
+        self.assertEqual(service.drop_target(rects, 95, 50)[1], "right")   # right edge of a
+        self.assertEqual(service.drop_target(rects, 250, 5)[0], "b")       # over b
+        self.assertEqual(service.drop_target(rects, 250, 95)[1], "down")   # bottom of b
+        self.assertEqual(service.drop_target({}, 0, 0), (None, ""))
+
     def test_forgettable_gating(self):
         f = service.forgettable
         # Running: only an offline, named peer that is not this computer.

@@ -92,11 +92,13 @@ class ArrangementView(Gtk.DrawingArea):
     """
 
     DRAG_THRESHOLD = 6
+    ROW_HEIGHT = 150  # pixels per grid row when showing a 2D arrangement
 
-    def __init__(self, on_changed, on_select=None):
+    def __init__(self, on_changed, on_select=None, on_grid_changed=None):
         super().__init__()
         self.order: list[str] = [ME, OTHER]
         self.cells: dict[str, tuple[int, int]] = {}  # name -> (col,row); empty = plain row
+        self._on_grid_changed = on_grid_changed
         self.me = ME
         self.titles: dict[str, str] = {}
         self.kinds: dict[str, str] = {}
@@ -141,6 +143,7 @@ class ArrangementView(Gtk.DrawingArea):
         self.order, self.me, self.cells = order, me, {}
         if self._selected not in order:
             self._selected = me
+        self.set_content_height(176)  # back to the compact single-row height
         self.refresh()
 
     def set_grid(self, cells: dict, me: str):
@@ -156,6 +159,10 @@ class ArrangementView(Gtk.DrawingArea):
         self.cells, self.order, self.me = cells, order, me
         if self._selected not in cells:
             self._selected = me
+        # Grow with the number of rows so each screen gets room (a single row
+        # keeps the compact height).
+        rows = max((r for _, r in cells.values()), default=0) + 1
+        self.set_content_height(176 if rows <= 1 else rows * self.ROW_HEIGHT)
         self.refresh()
 
     @property
@@ -218,7 +225,9 @@ class ArrangementView(Gtk.DrawingArea):
     # --- input -------------------------------------------------------------
 
     def _is_grid(self) -> bool:
-        return bool(self.cells) and max((r for _, r in self.cells.values()), default=0) > 0
+        # Any time the view holds cells (a Linux group) it uses the 2D grid, so a
+        # screen can be dragged above or below another even from a single row.
+        return bool(self.cells)
 
     def _cell_at(self, x: float, y: float) -> str:
         for name, (rx, ry, rw, rh) in self._grid_rects.items():
@@ -235,15 +244,22 @@ class ArrangementView(Gtk.DrawingArea):
     def _drag_begin(self, _g, x, y):
         self.grab_focus()
         if self._is_grid():
-            # Two-dimensional arrangement: a click selects; drag-to-move is not
-            # wired yet, so just remember where the press started.
-            self._drag = ("grid", x, y)
+            # ("grid", dragged-name, start_x, start_y, dx, dy)
+            self._drag = ("grid", self._cell_at(x, y), x, y, 0.0, 0.0)
             return
         i = self._index_at(x)
         self._drag = (i, x, 0.0) if i >= 0 else None
 
-    def _drag_update(self, _g, dx, _dy):
-        if self._drag is not None and self._drag[0] != "grid" and len(self.order) > 2:
+    def _drag_update(self, _g, dx, dy):
+        if self._drag is None:
+            return
+        if self._drag[0] == "grid":
+            _, name, x0, y0, _, _ = self._drag
+            self._drag = ("grid", name, x0, y0, dx, dy)
+            if name:
+                self.queue_draw()
+            return
+        if len(self.order) > 2:
             i, x0, _ = self._drag
             self._drag = (i, x0, dx)
             self.queue_draw()
@@ -254,10 +270,20 @@ class ArrangementView(Gtk.DrawingArea):
             self.queue_draw()
             return
         if drag[0] == "grid":
+            _, name, x0, y0, _, _ = drag
             if abs(dx) < self.DRAG_THRESHOLD and abs(dy) < self.DRAG_THRESHOLD:
-                name = self._cell_at(drag[1], drag[2])
                 if name:
                     self._select(name)
+                self.queue_draw()
+                return
+            if name:
+                target, side = service.drop_target(self._grid_rects, x0 + dx, y0 + dy)
+                if target and (target != name or side == "center"):
+                    cells = service.place_adjacent(self.cells, name, target, side)
+                    self.set_grid(cells, self.me)
+                    if self._on_grid_changed is not None:
+                        self._on_grid_changed(dict(self.cells))
+            self.queue_draw()
             return
         i, x0, _ = drag
         name = self.order[i]
@@ -279,6 +305,22 @@ class ArrangementView(Gtk.DrawingArea):
         return len(self._rects) - 1
 
     def _key(self, _ctl, keyval, _code, _state):
+        if self._is_grid():
+            name = self._selected
+            if name not in self.cells:
+                return False
+            side = {Gdk.KEY_Left: "left", Gdk.KEY_KP_Left: "left",
+                    Gdk.KEY_Right: "right", Gdk.KEY_KP_Right: "right",
+                    Gdk.KEY_Up: "up", Gdk.KEY_KP_Up: "up",
+                    Gdk.KEY_Down: "down", Gdk.KEY_KP_Down: "down"}.get(keyval)
+            if side is None:
+                return False
+            cells = service.move_in_grid(self.cells, name, side)
+            if cells != self.cells:
+                self.set_grid(cells, self.me)
+                if self._on_grid_changed is not None:
+                    self._on_grid_changed(dict(self.cells))
+            return True
         name = self.me if len(self.order) == 2 else self._selected
         if keyval in (Gdk.KEY_Left, Gdk.KEY_KP_Left):
             self._move(name, self.order.index(name) - 1)
@@ -403,6 +445,26 @@ class ArrangementView(Gtk.DrawingArea):
             cr.set_line_width(2)
             cr.stroke()
 
+    def _grid_drop_hint(self, cr, rect, side, accent):
+        x, y, w, h = rect
+        if side == "center":
+            _rounded_rect(cr, x, y, w, h, 8)
+            cr.set_source_rgba(accent.red, accent.green, accent.blue, 0.20)
+            cr.fill()
+            return
+        cr.set_source_rgba(accent.red, accent.green, accent.blue, 0.9)
+        cr.set_line_width(4)
+        cr.set_line_cap(1)
+        if side == "left":
+            cr.move_to(x - 5, y); cr.line_to(x - 5, y + h)
+        elif side == "right":
+            cr.move_to(x + w + 5, y); cr.line_to(x + w + 5, y + h)
+        elif side == "up":
+            cr.move_to(x, y - 5); cr.line_to(x + w, y - 5)
+        elif side == "down":
+            cr.move_to(x, y + h + 5); cr.line_to(x + w, y + h + 5)
+        cr.stroke()
+
     def _draw_grid(self, cr, width, height):
         """Draw the screens in two dimensions, each in its grid cell, with
         connectors where neighbouring screens touch."""
@@ -438,7 +500,16 @@ class ArrangementView(Gtk.DrawingArea):
                     cr.line_to(x1 - 6, sy)
                 cr.stroke()
 
-        for name, (x, y, w, h) in rects.items():
+        # A screen being dragged follows the pointer; highlight where it will land.
+        drag_name, ddx, ddy = "", 0.0, 0.0
+        if (self._drag is not None and self._drag[0] == "grid" and self._drag[1]
+                and (abs(self._drag[4]) >= self.DRAG_THRESHOLD or abs(self._drag[5]) >= self.DRAG_THRESHOLD)):
+            drag_name, ddx, ddy = self._drag[1], self._drag[4], self._drag[5]
+            target, side = service.drop_target(rects, self._drag[2] + ddx, self._drag[3] + ddy)
+            if target and target in rects:
+                self._grid_drop_hint(cr, rects[target], side, accent)
+
+        def draw_screen(name, x, y, w, h, lifted=False):
             local = name == self.me
             away = name in self.offline
             _rounded_rect(cr, x, y, w, h, 8)
@@ -446,8 +517,8 @@ class ArrangementView(Gtk.DrawingArea):
             cr.set_source_rgba(fill.red, fill.green, fill.blue, 0.16 if local else (0.02 if away else 0.05))
             cr.fill_preserve()
             cr.set_source_rgba(stroke.red, stroke.green, stroke.blue,
-                               0.9 if local else (0.2 if away else 0.35))
-            cr.set_line_width(2.5 if name == self._selected and self.has_focus() else 1.5)
+                               0.9 if local or lifted else (0.2 if away else 0.35))
+            cr.set_line_width(2.5 if (lifted or (name == self._selected and self.has_focus())) else 1.5)
             if away:
                 cr.set_dash([5, 4])
             cr.stroke()
@@ -459,6 +530,14 @@ class ArrangementView(Gtk.DrawingArea):
             if name == self.location and self.connected:
                 sub = "Pointer is here" if not local else "This computer · pointer here"
             self._text(cr, sub, x + w / 2, y + h + 22, fg, 0.6, max_w=label_w)
+
+        for name, (x, y, w, h) in rects.items():
+            if name == drag_name:
+                continue  # drawn last, lifted, following the pointer
+            draw_screen(name, x, y, w, h)
+        if drag_name and drag_name in rects:
+            x, y, w, h = rects[drag_name]
+            draw_screen(drag_name, x + ddx, y + ddy, w, h, lifted=True)
 
         if self.has_focus():
             _rounded_rect(cr, 2, 2, width - 4, height - 4, 10)
@@ -538,6 +617,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._waiting_for_settings = False  # mwb runs but has no usable settings
         self._layout_order: list[str] = []  # the screen order as the user arranged it
         self._layout_dirty = False
+        self._grid_dirty: dict | None = None  # a 2D arrangement the user dragged, not yet saved
         self._group: dict | None = None  # a running group's layout, members and pointer
         self._status_addresses: list[str] = []  # this machine's, as mwb reported them
 
@@ -552,7 +632,8 @@ class MainWindow(Gtk.ApplicationWindow):
         outer.append(page)
 
         page.append(self._build_status())
-        self.arrangement = ArrangementView(self._arrangement_changed, self._on_screen_selected)
+        self.arrangement = ArrangementView(self._arrangement_changed, self._on_screen_selected,
+                                           self._arrangement_grid_changed)
         arr_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         arr_box.append(self.arrangement)
         self.arrangement_hint = _dim("")
@@ -805,6 +886,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self.files.set_active(bool(values["file_transfer"]))
             self._edge = str(values["edge"])
             self._layout_order, self._layout_dirty = [], False
+            self._grid_dirty = None
             self._refresh_interfaces(str(values["interface"]))
             self.btn_apply_restart.set_visible(False)
             if doc is not None and not doc.lines:
@@ -829,6 +911,7 @@ class MainWindow(Gtk.ApplicationWindow):
             "edge": self._edge,
             "interface": self._selected_interface(),
             "layout": self._layout_to_save(),
+            "grid": self._grid_to_save(),
             "bidirectional": self.bidi.get_active(),
             "clipboard": self.clip.get_active(),
             "file_transfer": self.files.get_active(),
@@ -842,6 +925,29 @@ class MainWindow(Gtk.ApplicationWindow):
         order = list(self._layout_order) if self._layout_dirty else list(self._loaded.get("layout") or [])
         hidden = self._hidden()
         return [n for n in order if n not in hidden] if hidden else order
+
+    def _loaded_grid_cells(self) -> dict:
+        """The grid saved in the config, parsed to {name: (col, row)}."""
+        cells = {}
+        for e in (self._loaded.get("grid") or []):
+            parts = str(e).split(":")
+            if len(parts) == 3:
+                try:
+                    cells[parts[0]] = (int(parts[1]), int(parts[2]))
+                except ValueError:
+                    pass
+        return cells
+
+    def _grid_to_save(self) -> list:
+        """The 2D arrangement to write as ["name:col:row", …], forgotten
+        machines removed. Empty when the arrangement is a plain row (then the
+        row in layout is enough), so it degrades cleanly."""
+        cells = self._grid_dirty if self._grid_dirty is not None else self._loaded_grid_cells()
+        hidden = self._hidden()
+        cells = {n: p for n, p in cells.items() if n not in hidden}
+        if not cells or max((r for _, r in cells.values()), default=0) == 0:
+            return []
+        return [f"{n}:{c}:{r}" for n, (c, r) in sorted(cells.items())]
 
     def changed_values(self) -> dict[str, object]:
         """Only the settings the user changed, so a save never overwrites an
@@ -893,6 +999,15 @@ class MainWindow(Gtk.ApplicationWindow):
             self._edge = "left" if order.index(me) == 1 else "right"
         else:
             self._layout_order, self._layout_dirty = list(order), True
+            self._grid_dirty = None  # a plain-row edit clears any 2D arrangement
+        self._changed()
+
+    def _arrangement_grid_changed(self, cells: dict):
+        """The user dragged a screen in the 2D arrangement."""
+        self._grid_dirty = {str(n): (int(c), int(r)) for n, (c, r) in cells.items()}
+        # Keep the row projection (top-to-bottom, left-to-right) in step.
+        self._layout_order = sorted(self._grid_dirty, key=lambda n: (self._grid_dirty[n][1], self._grid_dirty[n][0]))
+        self._layout_dirty = True
         self._changed()
 
     def _me_name(self, v: dict) -> str:
@@ -936,23 +1051,32 @@ class MainWindow(Gtk.ApplicationWindow):
         return order
 
     def _display_cells(self, me: str, hidden: set) -> dict:
-        """The 2D arrangement to draw, as {name: (col, row)}, from the running
-        group's positions. Empty when the group has no 2D arrangement (a plain
-        row), so the caller falls back to the row view. Forgotten machines are
-        left out; this machine is always included."""
+        """The 2D arrangement to draw, as {name: (col, row)}: the user's own
+        drag in progress, else the running group's positions. Empty when there
+        is no 2D arrangement (a plain row), so the caller falls back to the row
+        view. Forgotten machines are left out; this machine is always included."""
+        if self._grid_dirty is not None:
+            cells = {n: p for n, p in self._grid_dirty.items() if n not in hidden}
+            return cells if me in cells else {}
         pos = (self._group or {}).get("pos") or {}
-        if not pos or me not in pos:
-            return {}
-        cells = {}
-        for name, p in pos.items():
-            name = str(name)
-            if name in hidden:
-                continue
-            try:
-                cells[name] = (int(p["c"]), int(p["r"]))
-            except (KeyError, TypeError, ValueError):
-                return {}
-        return cells if me in cells else {}
+        if pos and me in pos:
+            cells = {}
+            for name, p in pos.items():
+                name = str(name)
+                if name in hidden:
+                    continue
+                try:
+                    cells[name] = (int(p["c"]), int(p["r"]))
+                except (KeyError, TypeError, ValueError):
+                    return {}
+            return cells if me in cells else {}
+        # No 2D positions saved: lay the row out as a single-row grid, so the
+        # drag works from a plain row too. Only for a real named group (no ME /
+        # OTHER placeholders), which the two-machine pairing view still uses.
+        order = self._display_layout(me)
+        if len(order) >= 2 and me in order and OTHER not in order and ME not in order:
+            return {n: (i, 0) for i, n in enumerate(order)}
+        return {}
 
     def _sync_arrangement(self, v: dict):
         a = self.arrangement
@@ -1026,8 +1150,9 @@ class MainWindow(Gtk.ApplicationWindow):
         a = self.arrangement
         if a._is_grid():
             self.arrangement_hint.set_text(
-                "The screens as they sit on your desk. The pointer crosses where screens touch — "
-                "side to side and top to bottom. Click a screen to select it; offline computers are skipped.")
+                "The screens as they sit on your desk. Click one to select it, then use the arrow keys "
+                "to move it up, down, left or right — or drag it beside another. The pointer crosses where "
+                "screens touch. Offline computers are skipped.")
             return
         if len(a.order) > 2:
             self.arrangement_hint.set_text(
@@ -1160,9 +1285,9 @@ class MainWindow(Gtk.ApplicationWindow):
             updates.pop("name")  # empty means "use the hostname"; don't write ""
         if "edge" in updates:
             updates["edge_changed"] = int(time.time())
-        if "layout" in updates:
-            # In a group the most recently chosen order wins, and mwb copies
-            # it to the other computers.
+        if "layout" in updates or "grid" in updates:
+            # In a group the most recently chosen arrangement wins, and mwb
+            # copies it to the other computers.
             updates["layout_changed"] = int(time.time())
         try:
             cf.save(updates, self.config_path)
