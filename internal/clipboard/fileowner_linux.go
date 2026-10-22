@@ -50,7 +50,32 @@ type fileOwner struct {
 var (
 	ownerMu      sync.Mutex
 	currentOwner *fileOwner
+	// ourSelectionWindows holds the X windows this process uses to own the
+	// CLIPBOARD selection while it offers a received file. The XFIXES watcher
+	// consults it so mwb's own staging is never mistaken for the user copying
+	// something (which would echo the file straight back to the sender).
+	ourSelectionWindows = map[xproto.Window]bool{}
 )
+
+func markOurSelectionWindow(win xproto.Window) {
+	ownerMu.Lock()
+	ourSelectionWindows[win] = true
+	ownerMu.Unlock()
+}
+
+func unmarkOurSelectionWindow(win xproto.Window) {
+	ownerMu.Lock()
+	delete(ourSelectionWindows, win)
+	ownerMu.Unlock()
+}
+
+// isOurSelectionWindow reports whether win is one this process owns the
+// clipboard with. Safe to call with win == 0 (never ours).
+func isOurSelectionWindow(win xproto.Window) bool {
+	ownerMu.Lock()
+	defer ownerMu.Unlock()
+	return ourSelectionWindows[win]
+}
 
 // offerFile puts path on the clipboard in every file format, replacing any
 // file this process offered before.
@@ -94,6 +119,14 @@ func newFileOwner(display, path string) (*fileOwner, error) {
 		xproto.WindowClassInputOnly, 0, 0, nil).Check(); err != nil {
 		return nil, err
 	}
+	// Register the window before taking the selection, so the XFIXES watcher
+	// already knows the imminent ownership change is ours, not a user copy.
+	markOurSelectionWindow(win)
+	defer func() {
+		if !ok {
+			unmarkOurSelectionWindow(win)
+		}
+	}()
 
 	atom := func(name string) (xproto.Atom, error) {
 		r, err := xproto.InternAtom(conn, false, uint16(len(name)), name).Reply()
@@ -145,6 +178,7 @@ func newFileOwner(display, path string) (*fileOwner, error) {
 
 func (o *fileOwner) serve(clipboard, targetsAtom, timestampAtom xproto.Atom, offered []xproto.Atom, data map[xproto.Atom][]byte, names map[xproto.Atom]string) {
 	defer close(o.done)
+	defer unmarkOurSelectionWindow(o.win)
 	for {
 		ev, err := o.conn.WaitForEvent()
 		if ev == nil && err == nil {

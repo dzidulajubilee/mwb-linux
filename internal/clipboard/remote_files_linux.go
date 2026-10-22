@@ -56,7 +56,10 @@ func (m *Manager) HandleFileChannel(r io.Reader, maxSize int64) (*filetransfer.R
 	}
 
 	m.mu.Lock()
-	m.lastHash = "file:" + res.Path
+	// Staging makes this process the selection owner. The XFIXES watcher skips
+	// that change (isOurSelectionWindow), so clipGen is unchanged and this hash
+	// matches what the poller will compute, which stops the file echoing back.
+	m.lastHash = fileClipHash(m.clipGen, []string{res.Path})
 	m.justSet = time.Now()
 	m.mu.Unlock()
 
